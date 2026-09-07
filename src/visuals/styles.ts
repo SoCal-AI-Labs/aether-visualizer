@@ -3848,7 +3848,6 @@ export function createAbyss(): VisualStyle {
   let anglerLure: THREE.Mesh | null = null
   let anglerLureMat: THREE.MeshBasicMaterial | null = null
   let anglerLight: THREE.PointLight | null = null
-  let anglerGlow: THREE.Mesh | null = null
   let anglerEye: THREE.MeshBasicMaterial | null = null
   let anglerTail: THREE.Mesh | null = null
   let anglerFins: THREE.Mesh[] = []
@@ -4025,6 +4024,7 @@ export function createAbyss(): VisualStyle {
     // lower jaw pivot
     const jaw = new THREE.Group()
     jaw.position.set(0.55, -0.25, 0)
+    jaw.rotation.z = -0.34 // fixed gape, no chewing
     const jawMesh = new THREE.Mesh(new THREE.SphereGeometry(0.66, 18, 12), skin)
     jawMesh.scale.set(1.25, 0.42, 0.95)
     jawMesh.position.set(0.55, -0.15, 0)
@@ -4097,19 +4097,13 @@ export function createAbyss(): VisualStyle {
     const lure = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12), lureMat)
     lure.position.set(2.3, 1.75, 0)
     fish.add(lure)
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(0.5, 16, 12),
-      new THREE.MeshBasicMaterial({ color: 0x9ff2ff, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false }),
-    )
-    glow.position.copy(lure.position)
-    fish.add(glow)
     const light = new THREE.PointLight(0x9ff2ff, 14, 20, 1.5)
     light.position.copy(lure.position)
     fish.add(light)
     fish.traverse((o) => {
       o.frustumCulled = false
     })
-    return { fish, jaw, lure, lureMat, glow, light, eyeMat, tail, fins }
+    return { fish, jaw, lure, lureMat, light, eyeMat, tail, fins }
   }
 
   return {
@@ -4203,7 +4197,6 @@ export function createAbyss(): VisualStyle {
       anglerJaw = a.jaw
       anglerLure = a.lure
       anglerLureMat = a.lureMat
-      anglerGlow = a.glow
       anglerLight = a.light
       anglerEye = a.eyeMat
       anglerTail = a.tail
@@ -4272,15 +4265,17 @@ export function createAbyss(): VisualStyle {
             }
           }
         } else {
+          // soft boundaries: the drift eases back toward the swarm instead of teleporting,
+          // so the scene never "cuts" - it is one continuous loop
+          if (j.base.x > 9) j.drift.x -= dt * 0.06
+          else if (j.base.x < -9) j.drift.x += dt * 0.06
+          if (j.base.z > -4) j.drift.z -= dt * 0.05
+          else if (j.base.z < -20) j.drift.z += dt * 0.05
+          j.drift.x = Math.max(-0.22, Math.min(0.22, j.drift.x))
+          j.drift.z = Math.max(-0.16, Math.min(0.16, j.drift.z))
           j.base.x += j.drift.x * dt
-          j.base.y += (j.drift.y * kick * 0.6 - 0.02) * dt
+          j.base.y += (j.drift.y * kick * 0.6 - 0.02 - j.base.y * 0.012) * dt
           j.base.z += j.drift.z * dt
-          if (j.base.x > 12) j.base.x = -12
-          if (j.base.x < -12) j.base.x = 12
-          if (j.base.y > 8) j.base.y = -8
-          if (j.base.y < -8) j.base.y = 8
-          if (j.base.z > -2) j.base.z = -22
-          if (j.base.z < -22) j.base.z = -2
           j.root.position.copy(j.base)
           j.root.position.y += Math.sin(clock * 0.6 + j.phase * 0.2) * 0.2
         }
@@ -4423,7 +4418,7 @@ export function createAbyss(): VisualStyle {
         }
       }
 
-      if (angler && anglerJaw && anglerLure && anglerLureMat && anglerLight && anglerGlow && anglerEye && anglerTail) {
+      if (angler && anglerJaw && anglerLure && anglerLureMat && anglerLight && anglerEye && anglerTail) {
         if (!anglerActive) {
           anglerTimer -= dt
           if (anglerTimer <= 0) {
@@ -4446,21 +4441,13 @@ export function createAbyss(): VisualStyle {
           // slow tail beat, fins ripple
           anglerTail.rotation.y = Math.sin(clock * 2.6) * 0.45
           for (let i = 0; i < anglerFins.length; i++) anglerFins[i].rotation.y = (i === 0 ? -0.6 : 0.6) + Math.sin(clock * 3 + i) * 0.25
-          // jaw gapes with the bass, snaps on beats
-          const gape = 0.1 + m.bass * 0.55 + flash * 0.3
-          anglerJaw.rotation.z = -gape
-          // lure: bioluminescent trap that pulses with the music
+          // lure: bioluminescent trap that pulses with the music (jaw stays fixed)
           lureGlow += (0.35 + m.bass * 1.2 + m.treble * 0.5 + (m.beat ? 1.2 : 0) - lureGlow) * Math.min(1, dt * 10)
           lureCol.copy(colC).lerp(white, 0.35)
           anglerLureMat.color.copy(lureCol).multiplyScalar(0.6 + lureGlow * 1.6)
           anglerLight.color.copy(lureCol)
           anglerLight.intensity = 12 + lureGlow * 40
-          const gm = anglerGlow.material as THREE.MeshBasicMaterial
-          gm.color.copy(lureCol)
-          gm.opacity = 0.08 + lureGlow * 0.22
-          anglerGlow.scale.setScalar(0.8 + lureGlow * 0.8 + Math.sin(clock * 9) * 0.06)
           anglerLure.position.y = 1.75 + Math.sin(clock * 1.7) * 0.08
-          anglerGlow.position.copy(anglerLure.position)
           anglerLight.position.copy(anglerLure.position)
           anglerEye.color.copy(lureCol).multiplyScalar(0.4 + lureGlow * 0.4)
           if (anglerT >= 1) {
@@ -4490,7 +4477,6 @@ export function createAbyss(): VisualStyle {
       anglerLure = null
       anglerLureMat = null
       anglerLight = null
-      anglerGlow = null
       anglerEye = null
       anglerTail = null
       anglerFins = []
@@ -4622,7 +4608,7 @@ export function createCaldera(): VisualStyle {
   }
 
   const makeRockMaterial = () => {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x2a2426, roughness: 0.94, metalness: 0.02, flatShading: true })
+    const mat = new THREE.MeshStandardMaterial({ color: 0x4a4044, roughness: 0.92, metalness: 0.02, flatShading: true })
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = rockUniforms.uTime
       shader.uniforms.uHot = rockUniforms.uHot
@@ -4650,11 +4636,26 @@ export function createCaldera(): VisualStyle {
           }`,
         )
         .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          {
+            // solid basalt: ash-grey mottling and slope-band variation so the cone reads as rock mass
+            vec2 q = vLocalPos.xz;
+            float mottle = vnoise(q * 0.55 + vec2(9.0, 4.0)) * 0.6 + vnoise(q * 1.9) * 0.4;
+            float bands = 0.85 + 0.15 * sin(vLocalPos.y * 2.3 + vnoise(q * 0.3) * 4.0);
+            diffuseColor.rgb *= (0.55 + mottle * 0.9) * bands;
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.4, 0.43), smoothstep(0.35, 0.75, mottle) * 0.35);
+          }`,
+        )
+        .replace(
           '#include <emissivemap_fragment>',
           `#include <emissivemap_fragment>
           {
             float r = length(vLocalPos.xz);
             vec2 q = vLocalPos.xz;
+            // warm underglow from the lava lights the rock faintly, hiding the black-hole look
+            float heightGlow = smoothstep(2.0, ${H.toFixed(1)}, vLocalPos.y);
+            totalEmissiveRadiance += uLava * (0.012 + heightGlow * 0.035) * (1.0 + uHot * 0.6);
             float n1 = vnoise(q * 0.36 + vec2(3.1, 1.7)) + vnoise(q * 0.9) * 0.25;
             float vein1 = 1.0 - smoothstep(0.0, 0.028 + uHot * 0.012, abs(n1 - 0.62));
             float n2 = vnoise(q * 0.95 + vec2(7.7, 2.2)) + vnoise(q * 2.4) * 0.2;
@@ -4662,7 +4663,7 @@ export function createCaldera(): VisualStyle {
             float fall = smoothstep(${RS.toFixed(1)}, 4.0, r) * 0.75 + 0.25;
             float shore = smoothstep(${(RS + 0.5).toFixed(1)}, ${(RS - 1.5).toFixed(1)}, r);
             float pulse = 0.6 + 0.4 * sin(uTime * 1.6 - r * 0.9 + n1 * 4.0);
-            float veins = (vein1 * 1.0 + vein2 * 0.5) * fall * shore * step(2.0, r);
+            float veins = (vein1 * 0.9 + vein2 * 0.35) * fall * shore * step(2.0, r);
             totalEmissiveRadiance += uLava * veins * (0.5 + uHot * 1.1) * pulse;
           }`,
         )
@@ -5303,7 +5304,14 @@ export function createCaldera(): VisualStyle {
       sea.frustumCulled = false
       group.add(sea)
 
-      group.add(new THREE.HemisphereLight(0x1a2a4a, 0x060306, 0.75))
+      group.add(new THREE.HemisphereLight(0x33476a, 0x14090a, 1.15))
+      // cool moonlight key so the cone's flat-shaded facets read as a solid mountain
+      const moon = new THREE.DirectionalLight(0x8fa3d0, 0.85)
+      moon.position.set(60, 90, 40)
+      group.add(moon)
+      const fill = new THREE.DirectionalLight(0x4a4f70, 0.35)
+      fill.position.set(-70, 40, -50)
+      group.add(fill)
       scene.add(group)
     },
     update(m, time, dt, palette, _speed, sensitivity) {
@@ -5574,6 +5582,15 @@ export function createRainWindow(): VisualStyle {
               float flick = 0.75 + 0.25 * sin(uTime * (0.8 + wh * 3.0) + wh * 20.0);
               float win = box(wf, vec2(0.5), vec2(0.24, 0.28), b * 40.0) * lit * flick;
               vec3 wcol = mix(vec3(1.0, 0.85, 0.6), mix(uA, uC, hash(wid + 3.0)), 0.4);
+              // a quarter of the lit windows are neon-colored and pulse with the music
+              float cpick = hash(wid + vec2(17.0 + cellId, fl * 5.0 + 2.0));
+              float colorful = step(cpick, 0.25);
+              float bandPick = hash(wid + vec2(fl + 41.0, cellId));
+              float band = bandPick < 0.33 ? uBass : (bandPick < 0.66 ? uMid : uTreble);
+              vec3 ncol = bandPick < 0.33 ? neon(uA) : (bandPick < 0.66 ? neon(uC) : neon(uB));
+              float mine = step(abs(mod(uBeatId + floor(cpick * 40.0), 5.0)), 0.5);
+              float pulse = 0.35 + band * 1.6 + uFlare * mine * 1.8;
+              wcol = mix(wcol, ncol * pulse * 1.6, colorful);
               col = mix(col, bcol, inside);
               col += wcol * win * inside * (layer == 0 ? 0.28 : 0.5) * (0.8 + uEnergy * 0.4);
               covered = max(covered, inside);
@@ -5605,7 +5622,6 @@ export function createRainWindow(): VisualStyle {
             float aspect = uRes.x / max(uRes.y, 1.0);
             vec2 p = (vUv - 0.5) * vec2(aspect, 1.0);
             float t = uTime;
-            p += vec2(sin(t * 57.0), cos(t * 49.0)) * uBass * 0.0025;
 
             vec2 normal = vec2(0.0);
             float dropMask = 0.0;
@@ -5621,7 +5637,6 @@ export function createRainWindow(): VisualStyle {
               float h = hash(id + fl * 11.0);
               float exists = step(h, 0.32 + uEnergy * 0.42);
               vec2 center = (vec2(hash(id + 1.3), hash(id + 2.7)) - 0.5) * 0.55;
-              center += vec2(sin(t * 31.0 + h * 20.0), cos(t * 27.0 + h * 9.0)) * uBass * 0.03;
               float r = 0.11 + hash(id + 4.1) * 0.15;
               vec2 d = f - center;
               float dist = length(d);
