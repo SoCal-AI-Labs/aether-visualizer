@@ -2,13 +2,42 @@
   "name": "aether-visualizer",
   "productName": "Aether",
   "version": "1.0.0",
+  "description": "Aether - cinematic audio visualizer",
+  "author": "SoCal AI Labs",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.node.json --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder --win dir",
+    "dist:installer": "npm run build && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.socalailabs.aether",
+    "productName": "Aether",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "dir"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   },
   "dependencies": {
     "electron-audio-loopback": "^1.0.6",
@@ -23,6 +52,7 @@
     "@types/three": "^0.176.0",
     "@vitejs/plugin-react": "^4.4.1",
     "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vite-plugin-electron": "^0.29.0",
