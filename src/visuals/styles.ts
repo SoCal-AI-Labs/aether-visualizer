@@ -4704,6 +4704,10 @@ export function createCaldera(): VisualStyle {
       const r = 2.1 + (i / 44) * (RS + 2.5 - 2.1)
       profile.push(new THREE.Vector2(r, slope(r)))
     }
+    // LatheGeometry winds its faces outward only when the profile runs bottom-to-top; ours was
+    // authored crater-first (top-to-bottom), which flipped every face inward: the near side of the
+    // cone was back-face culled and you saw the inside of the far wall - the "see-through" mountain.
+    profile.reverse()
     const coneGeo = new THREE.LatheGeometry(profile, opts.main ? 110 : 72)
     const cp = coneGeo.getAttribute('position') as THREE.BufferAttribute
     for (let i = 0; i < cp.count; i++) {
