@@ -20,6 +20,7 @@ export type VisualStyle = {
     dt: number,
     palette: Palette,
     speed?: number,
+    sensitivity?: number,
   ) => void
   resize?: (w: number, h: number) => void
   dispose: (scene: THREE.Scene) => void
@@ -3841,15 +3842,21 @@ export function createAbyss(): VisualStyle {
   let group: THREE.Group | null = null
   let cameraRef: THREE.PerspectiveCamera | null = null
   let snow: THREE.Points | null = null
-  let beam: THREE.Mesh | null = null
   let school: THREE.Points | null = null
+  let angler: THREE.Group | null = null
+  let anglerJaw: THREE.Group | null = null
+  let anglerLure: THREE.Mesh | null = null
+  let anglerLureMat: THREE.MeshBasicMaterial | null = null
+  let anglerLight: THREE.PointLight | null = null
+  let anglerGlow: THREE.Mesh | null = null
+  let anglerEye: THREE.MeshBasicMaterial | null = null
+  let anglerTail: THREE.Mesh | null = null
+  let anglerFins: THREE.Mesh[] = []
   let flash = 0
   let clock = 0
+  let frame = 0
   let wavePos = 0
   let waveAmp = 0
-  let beamTimer = 8
-  let beamActive = false
-  let beamT = 0
   let schoolTimer = 16
   let schoolActive = false
   let schoolT = 0
@@ -3859,13 +3866,22 @@ export function createAbyss(): VisualStyle {
   let giantTimer = 30
   let giantActive = false
   let giantT = 0
+  let anglerTimer = 12
+  let anglerActive = false
+  let anglerT = 0
+  let anglerDir = 1
+  let anglerY = 0
+  let anglerZ = -6
+  let anglerDur = 26
+  let lureGlow = 0
   const TENT_PTS = 16
-  type Tentacle = { line: THREE.Line; len: number; angle: number; radius: number; phase: number; arm: boolean }
+  type Tentacle = { len: number; angle: number; radius: number; phase: number; arm: boolean }
   type Jelly = {
     root: THREE.Group
     bellMat: THREE.ShaderMaterial
     innerMat: THREE.ShaderMaterial
     tentacles: Tentacle[]
+    lines: THREE.LineSegments
     base: THREE.Vector3
     drift: THREE.Vector3
     phase: number
@@ -3877,9 +3893,13 @@ export function createAbyss(): VisualStyle {
     giant: boolean
   }
   const jellies: Jelly[] = []
-  const tmp = new THREE.Vector3()
   const colA = new THREE.Color()
   const colC = new THREE.Color()
+  const white = new THREE.Color(1, 1, 1)
+  const warm = new THREE.Color(1, 0.9, 0.55)
+  const innerCol = new THREE.Color()
+  const schoolCol = new THREE.Color()
+  const lureCol = new THREE.Color()
 
   const bellShader = (inner: boolean) =>
     new THREE.ShaderMaterial({
@@ -3935,46 +3955,50 @@ export function createAbyss(): VisualStyle {
     const bellMat = bellShader(false)
     const bell = new THREE.Mesh(bellGeo, bellMat)
     bell.scale.set(1, 0.78, 1)
+    bell.frustumCulled = false
     const innerMat = bellShader(true)
     const inner = new THREE.Mesh(bellGeo, innerMat)
     inner.scale.set(0.62, 0.5, 0.62)
     inner.position.y = -0.05
+    inner.frustumCulled = false
     root.add(bell, inner)
     const tentacles: Tentacle[] = []
-    const tentCount = giant ? 14 : 9
-    for (let i = 0; i < tentCount + 4; i++) {
+    const tentCount = giant ? 26 : 18
+    const armCount = 6
+    for (let i = 0; i < tentCount + armCount; i++) {
       const arm = i >= tentCount
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TENT_PTS * 3), 3))
-      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TENT_PTS * 3), 3))
-      const line = new THREE.Line(
-        geo,
-        new THREE.LineBasicMaterial({
-          vertexColors: true,
-          transparent: true,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          opacity: arm ? 0.9 : 0.7,
-        }),
-      )
-      line.frustumCulled = false
-      const angle = arm ? (i - tentCount) * (Math.PI / 2) + 0.4 : (i / tentCount) * Math.PI * 2
+      const angle = arm ? ((i - tentCount) / armCount) * Math.PI * 2 + 0.4 : (i / tentCount) * Math.PI * 2 + rng.next() * 0.12
       tentacles.push({
-        line,
-        len: arm ? 2.2 + rng.next() * 0.8 : 3.2 + rng.next() * 2.2,
+        len: arm ? 2.2 + rng.next() * 0.9 : 3.0 + rng.next() * 2.6,
         angle,
-        radius: arm ? 0.3 : 0.86 + rng.next() * 0.08,
+        radius: arm ? 0.28 + rng.next() * 0.1 : 0.8 + rng.next() * 0.16,
         phase: rng.next() * Math.PI * 2,
         arm,
       })
-      root.add(line)
     }
+    const segCount = tentacles.length * (TENT_PTS - 1)
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(segCount * 6), 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(segCount * 6), 3))
+    const lines = new THREE.LineSegments(
+      geo,
+      new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        opacity: 0.8,
+      }),
+    )
+    lines.frustumCulled = false
+    root.add(lines)
     root.scale.setScalar(size)
     return {
       root,
       bellMat,
       innerMat,
       tentacles,
+      lines,
       base: new THREE.Vector3(),
       drift: new THREE.Vector3((rng.next() - 0.5) * 0.3, 0.05 + rng.next() * 0.1, (rng.next() - 0.5) * 0.2),
       phase: rng.next() * Math.PI * 2,
@@ -3985,6 +4009,107 @@ export function createAbyss(): VisualStyle {
       flash: 0,
       giant,
     }
+  }
+
+  const buildAngler = () => {
+    const fish = new THREE.Group()
+    const skin = new THREE.MeshStandardMaterial({ color: 0x1c2531, roughness: 0.8, metalness: 0.08, emissive: 0x060a10 })
+    const body = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 18), skin)
+    body.scale.set(1.35, 0.95, 0.8)
+    fish.add(body)
+    // upper snout
+    const snout = new THREE.Mesh(new THREE.SphereGeometry(0.62, 18, 12), skin)
+    snout.scale.set(1.1, 0.55, 0.9)
+    snout.position.set(1.15, 0.22, 0)
+    fish.add(snout)
+    // lower jaw pivot
+    const jaw = new THREE.Group()
+    jaw.position.set(0.55, -0.25, 0)
+    const jawMesh = new THREE.Mesh(new THREE.SphereGeometry(0.66, 18, 12), skin)
+    jawMesh.scale.set(1.25, 0.42, 0.95)
+    jawMesh.position.set(0.55, -0.15, 0)
+    jaw.add(jawMesh)
+    const toothGeo = new THREE.ConeGeometry(0.045, 0.3, 6)
+    const toothMat = new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.4, emissive: 0x334455, emissiveIntensity: 0.3 })
+    for (let i = 0; i < 9; i++) {
+      const t = i / 8
+      const ang = (t - 0.5) * Math.PI * 0.9
+      // lower teeth (point up)
+      const lower = new THREE.Mesh(toothGeo, toothMat)
+      lower.position.set(0.55 + Math.cos(ang) * 0.72, 0.02, Math.sin(ang) * 0.62)
+      lower.rotation.z = -0.15
+      jaw.add(lower)
+      // upper teeth (point down)
+      const upper = new THREE.Mesh(toothGeo, toothMat)
+      upper.position.set(1.1 + Math.cos(ang) * 0.7, -0.02, Math.sin(ang) * 0.58)
+      upper.rotation.x = Math.PI
+      upper.rotation.z = 0.12
+      fish.add(upper)
+    }
+    fish.add(jaw)
+    // eyes
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x9ad8ff })
+    for (const s of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 8), eyeMat)
+      eye.position.set(0.95, 0.42, s * 0.55)
+      fish.add(eye)
+    }
+    // tail
+    const tailShape = new THREE.Shape()
+    tailShape.moveTo(0, 0)
+    tailShape.lineTo(-0.9, 0.75)
+    tailShape.lineTo(-0.7, 0)
+    tailShape.lineTo(-0.9, -0.75)
+    tailShape.closePath()
+    const finMat = new THREE.MeshStandardMaterial({ color: 0x1a2430, roughness: 0.8, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
+    const tail = new THREE.Mesh(new THREE.ShapeGeometry(tailShape), finMat)
+    tail.position.set(-1.25, 0, 0)
+    fish.add(tail)
+    // fins
+    const finShape = new THREE.Shape()
+    finShape.moveTo(0, 0)
+    finShape.lineTo(-0.7, 0.35)
+    finShape.lineTo(-0.55, -0.15)
+    finShape.closePath()
+    const fins: THREE.Mesh[] = []
+    for (const s of [-1, 1]) {
+      const fin = new THREE.Mesh(new THREE.ShapeGeometry(finShape), finMat)
+      fin.position.set(0.2, -0.3, s * 0.75)
+      fin.rotation.y = s * 0.6
+      fish.add(fin)
+      fins.push(fin)
+    }
+    const dorsal = new THREE.Mesh(new THREE.ShapeGeometry(finShape), finMat)
+    dorsal.position.set(-0.2, 0.9, 0)
+    dorsal.rotation.x = Math.PI / 2
+    dorsal.rotation.z = 0.4
+    fish.add(dorsal)
+    // lure stalk
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.7, 0.85, 0),
+      new THREE.Vector3(1.0, 1.7, 0),
+      new THREE.Vector3(1.7, 2.1, 0),
+      new THREE.Vector3(2.3, 1.75, 0),
+    ])
+    const stalk = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.03, 6, false), skin)
+    fish.add(stalk)
+    const lureMat = new THREE.MeshBasicMaterial({ color: 0x9ff2ff })
+    const lure = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12), lureMat)
+    lure.position.set(2.3, 1.75, 0)
+    fish.add(lure)
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x9ff2ff, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false }),
+    )
+    glow.position.copy(lure.position)
+    fish.add(glow)
+    const light = new THREE.PointLight(0x9ff2ff, 14, 20, 1.5)
+    light.position.copy(lure.position)
+    fish.add(light)
+    fish.traverse((o) => {
+      o.frustumCulled = false
+    })
+    return { fish, jaw, lure, lureMat, glow, light, eyeMat, tail, fins }
   }
 
   return {
@@ -4001,13 +4126,15 @@ export function createAbyss(): VisualStyle {
       group = new THREE.Group()
       const rng = styleRng(palette.seed)
       clock = 0
+      frame = 0
       flash = 0
-      beamTimer = 8
-      beamActive = false
       schoolTimer = 16
       schoolActive = false
       giantTimer = 30
       giantActive = false
+      anglerTimer = 10
+      anglerActive = false
+      lureGlow = 0
 
       for (let i = 0; i < 13; i++) {
         const jelly = makeJelly(rng, 0.45 + rng.next() * 0.85, false, i % 2 === 1)
@@ -4019,7 +4146,6 @@ export function createAbyss(): VisualStyle {
       const giant = makeJelly(rng, 3.6, true, false)
       giant.base.set(2, -22, -20)
       giant.root.position.copy(giant.base)
-      giant.root.visible = false
       jellies.push(giant)
       group.add(giant.root)
 
@@ -4043,24 +4169,8 @@ export function createAbyss(): VisualStyle {
           depthWrite: false,
         }),
       )
+      snow.frustumCulled = false
       group.add(snow)
-
-      const beamGeo = new THREE.ConeGeometry(3.2, 26, 24, 1, true)
-      beamGeo.translate(0, -13, 0)
-      beam = new THREE.Mesh(
-        beamGeo,
-        new THREE.MeshBasicMaterial({
-          color: 0xbfe0ff,
-          transparent: true,
-          opacity: 0.045,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-          blending: THREE.AdditiveBlending,
-        }),
-      )
-      beam.position.set(0, 13, -12)
-      beam.visible = false
-      group.add(beam)
 
       const schoolCount = 90
       const fp = new Float32Array(schoolCount * 3)
@@ -4084,13 +4194,36 @@ export function createAbyss(): VisualStyle {
           blending: THREE.AdditiveBlending,
         }),
       )
-      school.visible = false
+      school.frustumCulled = false
+      school.position.set(0, -60, -10)
       group.add(school)
 
+      const a = buildAngler()
+      angler = a.fish
+      anglerJaw = a.jaw
+      anglerLure = a.lure
+      anglerLureMat = a.lureMat
+      anglerGlow = a.glow
+      anglerLight = a.light
+      anglerEye = a.eyeMat
+      anglerTail = a.tail
+      anglerFins = a.fins
+      angler.position.set(0, -60, -8)
+      group.add(angler)
+      group.add(new THREE.HemisphereLight(0x2a4a6c, 0x000000, 0.9))
+
+      // everything is visible on the first frame so shaders compile up front; event actors hide after that
       scene.add(group)
     },
     update(m, time, dt, palette) {
       if (!group || !cameraRef) return
+      frame++
+      if (frame === 2) {
+        const g = jellies[jellies.length - 1]
+        if (!giantActive) g.root.visible = false
+        if (school && !schoolActive) school.visible = false
+        if (angler && !anglerActive) angler.visible = false
+      }
       clock += dt
       flash = Math.max(flash * Math.exp(-dt * 6), 0)
       colorFrom(palette.a, colA)
@@ -4120,22 +4253,23 @@ export function createAbyss(): VisualStyle {
         flash = 1
       }
 
-      const camPos = cameraRef.position
       for (const j of jellies) {
         if (!j.root.visible) continue
         const spec = m.spectrum[j.band % m.spectrum.length]
         j.phase += dt * j.rate * (0.8 + spec * 2.2 + m.energy * 0.6)
         const pulse = 0.5 + 0.5 * Math.sin(j.phase)
-        const kick = Math.max(0, Math.sin(j.phase)) // upward thrust during contraction
+        const kick = Math.max(0, Math.sin(j.phase))
         j.flash = Math.max(j.flash * Math.exp(-dt * 5), 0)
 
         if (j.giant) {
-          giantT += dt / 46
-          j.root.position.set(j.base.x + Math.sin(clock * 0.2) * 1.2, -22 + giantT * 40, j.base.z)
-          if (giantT >= 1) {
-            giantActive = false
-            j.root.visible = false
-            giantTimer = 60 + Math.random() * 30
+          if (giantActive) {
+            giantT += dt / 46
+            j.root.position.set(j.base.x + Math.sin(clock * 0.2) * 1.2, -22 + giantT * 40, j.base.z)
+            if (giantT >= 1) {
+              giantActive = false
+              j.root.visible = false
+              giantTimer = 60 + Math.random() * 30
+            }
           }
         } else {
           j.base.x += j.drift.x * dt
@@ -4159,15 +4293,25 @@ export function createAbyss(): VisualStyle {
         j.bellMat.uniforms.uPulse.value = pulse
         j.bellMat.uniforms.uFlash.value = j.flash
         j.bellMat.uniforms.uTime.value = time
-        j.innerMat.uniforms.uColor.value.copy(col).lerp(new THREE.Color(1, 1, 1), 0.25)
+        innerCol.copy(col).lerp(white, 0.25)
+        j.innerMat.uniforms.uColor.value.copy(innerCol)
         j.innerMat.uniforms.uGlow.value = 0.4 + spec * 1.6
         j.innerMat.uniforms.uPulse.value = pulse
         j.innerMat.uniforms.uFlash.value = j.flash
         j.innerMat.uniforms.uTime.value = time
 
+        const pos = j.lines.geometry.getAttribute('position') as THREE.BufferAttribute
+        const cols = j.lines.geometry.getAttribute('color') as THREE.BufferAttribute
+        const pa = pos.array as Float32Array
+        const ca = cols.array as Float32Array
+        let v = 0
+        let px = 0
+        let py = 0
+        let pz = 0
+        let pr = 0
+        let pg = 0
+        let pb = 0
         for (const t of j.tentacles) {
-          const pos = t.line.geometry.getAttribute('position') as THREE.BufferAttribute
-          const cols = t.line.geometry.getAttribute('color') as THREE.BufferAttribute
           const x0 = Math.cos(t.angle) * t.radius * (1 - pulse * 0.2)
           const z0 = Math.sin(t.angle) * t.radius * (1 - pulse * 0.2)
           const len = t.len * (1 + kick * 0.12)
@@ -4175,17 +4319,40 @@ export function createAbyss(): VisualStyle {
             const s = k / (TENT_PTS - 1)
             const sway = Math.sin(clock * 1.3 + t.phase + s * 3.2) * 0.32 * s * s + Math.sin(clock * 0.7 + t.phase * 1.7 + s * 5.0) * 0.12 * s
             const drag = -j.drift.x * s * s * 2.5
-            pos.setXYZ(k, x0 + sway + drag, -0.05 - s * len, z0 + Math.cos(clock * 1.1 + t.phase + s * 2.6) * 0.28 * s * s)
+            const x = x0 + sway + drag
+            const y = -0.05 - s * len
+            const z = z0 + Math.cos(clock * 1.1 + t.phase + s * 2.6) * 0.28 * s * s
             const wave = Math.exp(-Math.pow((s - wavePos) * 6, 2)) * waveAmp * 1.4
             const fade = Math.pow(1 - s, t.arm ? 0.8 : 1.3)
             const glow = (t.arm ? 0.6 : 0.4) * fade * (0.5 + spec * 1.2) + wave + j.flash * fade
-            cols.setXYZ(k, col.r * glow + wave * 0.3, col.g * glow + wave * 0.3, col.b * glow + wave * 0.3)
+            const r = col.r * glow + wave * 0.3
+            const g = col.g * glow + wave * 0.3
+            const b = col.b * glow + wave * 0.3
+            if (k > 0) {
+              pa[v] = px
+              pa[v + 1] = py
+              pa[v + 2] = pz
+              pa[v + 3] = x
+              pa[v + 4] = y
+              pa[v + 5] = z
+              ca[v] = pr
+              ca[v + 1] = pg
+              ca[v + 2] = pb
+              ca[v + 3] = r
+              ca[v + 4] = g
+              ca[v + 5] = b
+              v += 6
+            }
+            px = x
+            py = y
+            pz = z
+            pr = r
+            pg = g
+            pb = b
           }
-          pos.needsUpdate = true
-          cols.needsUpdate = true
         }
-        // face away from camera slightly for depth
-        tmp.subVectors(j.root.position, camPos)
+        pos.needsUpdate = true
+        cols.needsUpdate = true
       }
 
       if (!giantActive) {
@@ -4193,50 +4360,28 @@ export function createAbyss(): VisualStyle {
         if (giantTimer <= 0) {
           giantActive = true
           giantT = 0
-          const g = jellies[jellies.length - 1]
-          g.root.visible = true
+          jellies[jellies.length - 1].root.visible = true
         }
       }
 
       if (snow) {
         const pos = snow.geometry.getAttribute('position') as THREE.BufferAttribute
+        const arr = pos.array as Float32Array
         const fall = (0.18 + m.energy * 0.15) * dt
         for (let i = 0; i < pos.count; i++) {
-          let y = pos.getY(i) - fall * (0.6 + ((i * 7) % 5) * 0.2)
-          let x = pos.getX(i) + Math.sin(clock * 0.3 + i) * 0.002
+          const ix = i * 3
+          let y = arr[ix + 1] - fall * (0.6 + ((i * 7) % 5) * 0.2)
+          let x = arr[ix] + Math.sin(clock * 0.3 + i) * 0.002
           if (y < -12) {
             y = 12
             x = (Math.random() - 0.5) * 34
           }
-          pos.setXY(i, x, y)
+          arr[ix] = x
+          arr[ix + 1] = y
         }
         pos.needsUpdate = true
         const sm = snow.material as THREE.PointsMaterial
         sm.opacity = 0.35 + m.treble * 0.3 + flash * 0.2
-      }
-
-      if (beam) {
-        if (!beamActive) {
-          beamTimer -= dt
-          if (beamTimer <= 0) {
-            beamActive = true
-            beamT = 0
-            beam.visible = true
-          }
-        } else {
-          beamT += dt / 14
-          const sweep = Math.sin(beamT * Math.PI * 1.5) * 9
-          beam.position.set(sweep, 13, -13 + Math.sin(beamT * 4) * 2)
-          beam.rotation.z = -sweep * 0.035
-          beam.rotation.x = Math.sin(beamT * 2.2) * 0.2
-          const bm = beam.material as THREE.MeshBasicMaterial
-          bm.opacity = 0.045 * Math.sin(Math.min(1, beamT) * Math.PI) + 0.002
-          if (beamT >= 1) {
-            beamActive = false
-            beam.visible = false
-            beamTimer = 28 + Math.random() * 22
-          }
-        }
       }
 
       if (school) {
@@ -4248,6 +4393,7 @@ export function createAbyss(): VisualStyle {
             schoolDir = Math.random() > 0.5 ? 1 : -1
             schoolY = (Math.random() - 0.5) * 8
             schoolZ = -5 - Math.random() * 12
+            school.position.set(0, 0, 0)
             school.visible = true
           }
         } else {
@@ -4266,12 +4412,61 @@ export function createAbyss(): VisualStyle {
           }
           pos.needsUpdate = true
           const sm = school.material as THREE.PointsMaterial
-          sm.color.copy(colC).lerp(new THREE.Color(1, 0.9, 0.55), 0.5)
+          schoolCol.copy(colC).lerp(warm, 0.5)
+          sm.color.copy(schoolCol)
           sm.size = 0.1 + m.treble * 0.05
           if (schoolT >= 1) {
             schoolActive = false
             school.visible = false
             schoolTimer = 24 + Math.random() * 20
+          }
+        }
+      }
+
+      if (angler && anglerJaw && anglerLure && anglerLureMat && anglerLight && anglerGlow && anglerEye && anglerTail) {
+        if (!anglerActive) {
+          anglerTimer -= dt
+          if (anglerTimer <= 0) {
+            anglerActive = true
+            anglerT = 0
+            anglerDir = Math.random() > 0.5 ? 1 : -1
+            anglerY = (Math.random() - 0.5) * 5 - 0.5
+            anglerZ = -4.5 - Math.random() * 6
+            anglerDur = 24 + Math.random() * 10
+            angler.visible = true
+          }
+        } else {
+          anglerT += dt / anglerDur
+          const x = (anglerT * 2 - 1) * -anglerDir * 17
+          const y = anglerY + Math.sin(clock * 0.5) * 0.6
+          angler.position.set(x, y, anglerZ)
+          angler.rotation.y = anglerDir > 0 ? Math.PI : 0
+          angler.rotation.z = Math.sin(clock * 0.8) * 0.06
+          angler.scale.setScalar(1.15)
+          // slow tail beat, fins ripple
+          anglerTail.rotation.y = Math.sin(clock * 2.6) * 0.45
+          for (let i = 0; i < anglerFins.length; i++) anglerFins[i].rotation.y = (i === 0 ? -0.6 : 0.6) + Math.sin(clock * 3 + i) * 0.25
+          // jaw gapes with the bass, snaps on beats
+          const gape = 0.1 + m.bass * 0.55 + flash * 0.3
+          anglerJaw.rotation.z = -gape
+          // lure: bioluminescent trap that pulses with the music
+          lureGlow += (0.35 + m.bass * 1.2 + m.treble * 0.5 + (m.beat ? 1.2 : 0) - lureGlow) * Math.min(1, dt * 10)
+          lureCol.copy(colC).lerp(white, 0.35)
+          anglerLureMat.color.copy(lureCol).multiplyScalar(0.6 + lureGlow * 1.6)
+          anglerLight.color.copy(lureCol)
+          anglerLight.intensity = 12 + lureGlow * 40
+          const gm = anglerGlow.material as THREE.MeshBasicMaterial
+          gm.color.copy(lureCol)
+          gm.opacity = 0.08 + lureGlow * 0.22
+          anglerGlow.scale.setScalar(0.8 + lureGlow * 0.8 + Math.sin(clock * 9) * 0.06)
+          anglerLure.position.y = 1.75 + Math.sin(clock * 1.7) * 0.08
+          anglerGlow.position.copy(anglerLure.position)
+          anglerLight.position.copy(anglerLure.position)
+          anglerEye.color.copy(lureCol).multiplyScalar(0.4 + lureGlow * 0.4)
+          if (anglerT >= 1) {
+            anglerActive = false
+            angler.visible = false
+            anglerTimer = 22 + Math.random() * 18
           }
         }
       }
@@ -4289,8 +4484,16 @@ export function createAbyss(): VisualStyle {
       group = null
       cameraRef = null
       snow = null
-      beam = null
       school = null
+      angler = null
+      anglerJaw = null
+      anglerLure = null
+      anglerLureMat = null
+      anglerLight = null
+      anglerGlow = null
+      anglerEye = null
+      anglerTail = null
+      anglerFins = []
       jellies.length = 0
     },
   }
@@ -4301,29 +4504,22 @@ export function createCaldera(): VisualStyle {
   let cameraRef: THREE.PerspectiveCamera | null = null
   let seaMat: THREE.ShaderMaterial | null = null
   let skyMat: THREE.ShaderMaterial | null = null
-  let craterLight: THREE.PointLight | null = null
-  let embers: THREE.Points | null = null
-  let ashNear: THREE.Points | null = null
-  let ashFar: THREE.Points | null = null
+  let rockMat: THREE.MeshStandardMaterial | null = null
   const lavaMats: THREE.ShaderMaterial[] = []
-  const riverLights: THREE.PointLight[] = []
-  const bolts: { line: THREE.Line; life: number }[] = []
-  const steams: THREE.Points[] = []
-  type Bomb = { mesh: THREE.Mesh; trail: THREE.Line; pos: THREE.Vector3; vel: THREE.Vector3; active: boolean; hist: Float32Array }
-  const bombs: Bomb[] = []
-  const ashState: { angle: number; h: number; speed: number; wob: number }[] = []
-  const emberState: { x: number; y: number; z: number; vy: number; vx: number; life: number }[] = []
   const lava = new THREE.Color(0xff6a1a)
   const bolt = new THREE.Color(0x9ad0ff)
-  let clock = 0
-  let eruptionTimer = 24
-  let eruptionAge = -1
-  let eruption = 0
-  let bombTimer = 1
-  let boltCooldown = 0
+  const emberTint = new THREE.Color(1, 0.85, 0.5)
+  const steamBase = new THREE.Color(0.35, 0.36, 0.4)
+  const scratch = new THREE.Color()
+  const tmpV = new THREE.Vector3()
+  const upZ = new THREE.Vector3(0, 0, 1)
+  const rockUniforms = { uTime: { value: 0 }, uHot: { value: 0 }, uLava: { value: lava } }
+  type Volcano = { group: THREE.Group; update: (m: AudioMetrics, time: number, dt: number, sens: number) => number }
+  const volcanoes: Volcano[] = []
   const TRAIL = 12
   const H = 13
   const RS = 16
+  const SPARKS = 26
 
   const slope = (r: number) => {
     if (r <= 1.8) return H
@@ -4341,6 +4537,13 @@ export function createCaldera(): VisualStyle {
     )
   }
   const rock = (theta: number, r: number) => slope(r) + bump(theta, r)
+  const rockAt = (x: number, z: number) => rock(Math.atan2(z, x), Math.hypot(x, z))
+  const rockNormal = (x: number, z: number, out: THREE.Vector3) => {
+    const e = 0.2
+    const hx = rockAt(x + e, z) - rockAt(x - e, z)
+    const hz = rockAt(x, z + e) - rockAt(x, z - e)
+    return out.set(-hx / (2 * e), 1, -hz / (2 * e)).normalize()
+  }
 
   const noiseGLSL = `
     float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -4418,6 +4621,55 @@ export function createCaldera(): VisualStyle {
     return mat
   }
 
+  const makeRockMaterial = () => {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x2a2426, roughness: 0.94, metalness: 0.02, flatShading: true })
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = rockUniforms.uTime
+      shader.uniforms.uHot = rockUniforms.uHot
+      shader.uniforms.uLava = rockUniforms.uLava
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vLocalPos;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLocalPos = position;')
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          varying vec3 vLocalPos;
+          uniform float uTime, uHot;
+          uniform vec3 uLava;
+          float vhash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float vnoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = vhash(i);
+            float b = vhash(i + vec2(1.0, 0.0));
+            float c = vhash(i + vec2(0.0, 1.0));
+            float d = vhash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }`,
+        )
+        .replace(
+          '#include <emissivemap_fragment>',
+          `#include <emissivemap_fragment>
+          {
+            float r = length(vLocalPos.xz);
+            vec2 q = vLocalPos.xz;
+            float n1 = vnoise(q * 0.36 + vec2(3.1, 1.7)) + vnoise(q * 0.9) * 0.25;
+            float vein1 = 1.0 - smoothstep(0.0, 0.028 + uHot * 0.012, abs(n1 - 0.62));
+            float n2 = vnoise(q * 0.95 + vec2(7.7, 2.2)) + vnoise(q * 2.4) * 0.2;
+            float vein2 = 1.0 - smoothstep(0.0, 0.02, abs(n2 - 0.6));
+            float fall = smoothstep(${RS.toFixed(1)}, 4.0, r) * 0.75 + 0.25;
+            float shore = smoothstep(${(RS + 0.5).toFixed(1)}, ${(RS - 1.5).toFixed(1)}, r);
+            float pulse = 0.6 + 0.4 * sin(uTime * 1.6 - r * 0.9 + n1 * 4.0);
+            float veins = (vein1 * 1.0 + vein2 * 0.5) * fall * shore * step(2.0, r);
+            totalEmissiveRadiance += uLava * veins * (0.5 + uHot * 1.1) * pulse;
+          }`,
+        )
+    }
+    return mat
+  }
+
   const softTexture = () =>
     canvasTexture(64, 64, (ctx) => {
       const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
@@ -4428,188 +4680,95 @@ export function createCaldera(): VisualStyle {
       ctx.fillRect(0, 0, 64, 64)
     })
 
-  return {
-    id: 'caldera',
-    label: 'Caldera',
-    hint: 'Erupting volcano at night',
-    bloom: { base: 0.42, pulse: 0.18 },
-    mount(scene, camera, palette) {
-      cameraRef = camera
-      camera.position.set(0, 6.5, 40)
-      camera.lookAt(0, 8.5, 0)
-      scene.fog = new THREE.FogExp2(0x040308, 0.008)
-      scene.background = new THREE.Color(0x040308)
-      group = new THREE.Group()
-      const rng = styleRng(palette.seed)
-      clock = 0
-      eruptionTimer = 24
-      eruptionAge = -1
-      eruption = 0
-      lavaMats.length = 0
+  type Bomb = { mesh: THREE.Mesh; trail: THREE.Line; pos: THREE.Vector3; vel: THREE.Vector3; active: boolean; hist: Float32Array }
+  type Splash = { points: THREE.Points; vel: Float32Array; age: number; life: number; active: boolean; watery: boolean }
+  type Burn = { mesh: THREE.Mesh; age: number; life: number; active: boolean; size: number }
 
-      // sky dome
-      skyMat = new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        uniforms: { uLava: { value: lava }, uGlow: { value: 0 } },
-        vertexShader: `
-          varying vec3 vDir;
-          void main() {
-            vDir = normalize(position);
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 uLava;
-          uniform float uGlow;
-          varying vec3 vDir;
-          void main() {
-            vec3 d = normalize(vDir);
-            vec3 top = vec3(0.006, 0.008, 0.02);
-            vec3 hor = vec3(0.035, 0.025, 0.055);
-            vec3 col = mix(hor, top, smoothstep(0.0, 0.55, d.y));
-            float glow = exp(-pow(d.x * 2.6, 2.0)) * exp(-max(d.y, 0.0) * 6.0) * smoothstep(0.1, -0.3, d.z);
-            col += uLava * glow * (0.12 + uGlow * 0.25);
-            gl_FragColor = vec4(col, 1.0);
-          }
-        `,
-      })
-      const sky = new THREE.Mesh(new THREE.SphereGeometry(180, 32, 16), skyMat)
-      sky.renderOrder = -3
-      group.add(sky)
+  const buildVolcano = (
+    rng: ReturnType<typeof styleRng>,
+    softTex: THREE.Texture,
+    opts: { scale: number; rivers: number; ashPer: number; embers: number; bombs: number; bolts: number; main: boolean },
+  ): Volcano => {
+    const g = new THREE.Group()
+    g.scale.setScalar(opts.scale)
 
-      const starCount = 900
-      const sp = new Float32Array(starCount * 3)
-      for (let i = 0; i < starCount; i++) {
-        const th = rng.next() * Math.PI * 2
-        const ph = Math.acos(rng.next() * 0.9 + 0.05)
-        sp[i * 3] = 160 * Math.sin(ph) * Math.cos(th)
-        sp[i * 3 + 1] = 160 * Math.cos(ph)
-        sp[i * 3 + 2] = 160 * Math.sin(ph) * Math.sin(th)
-      }
-      const starGeo = new THREE.BufferGeometry()
-      starGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3))
-      group.add(
-        new THREE.Points(
-          starGeo,
-          new THREE.PointsMaterial({ color: 0xc8d4ee, size: 0.5, transparent: true, opacity: 0.7, depthWrite: false, fog: false }),
-        ),
-      )
+    // cone
+    const profile: THREE.Vector2[] = [
+      new THREE.Vector2(0, H - 1.6),
+      new THREE.Vector2(1.2, H - 1.6),
+      new THREE.Vector2(1.5, H - 0.7),
+      new THREE.Vector2(1.8, H),
+    ]
+    for (let i = 0; i <= 44; i++) {
+      const r = 2.1 + (i / 44) * (RS + 2.5 - 2.1)
+      profile.push(new THREE.Vector2(r, slope(r)))
+    }
+    const coneGeo = new THREE.LatheGeometry(profile, opts.main ? 110 : 72)
+    const cp = coneGeo.getAttribute('position') as THREE.BufferAttribute
+    for (let i = 0; i < cp.count; i++) {
+      const x = cp.getX(i)
+      const z = cp.getZ(i)
+      const r = Math.hypot(x, z)
+      if (r > 1.95) cp.setY(i, rock(Math.atan2(z, x), r))
+    }
+    coneGeo.computeVertexNormals()
+    g.add(new THREE.Mesh(coneGeo, rockMat!))
 
-      // sea
-      seaMat = new THREE.ShaderMaterial({
-        uniforms: { uTime: { value: 0 }, uGlow: { value: 0 }, uLava: { value: lava } },
-        vertexShader: `
-          varying vec3 vWorld;
-          void main() {
-            vec4 w = modelMatrix * vec4(position, 1.0);
-            vWorld = w.xyz;
-            gl_Position = projectionMatrix * viewMatrix * w;
-          }
-        `,
-        fragmentShader: `
-          uniform float uTime, uGlow;
-          uniform vec3 uLava;
-          varying vec3 vWorld;
-          ${noiseGLSL}
-          void main() {
-            vec2 p = vWorld.xz;
-            float r = length(p);
-            float ripple = fbm(p * 0.35 + vec2(uTime * 0.15, uTime * 0.08));
-            float streak = fbm(vec2(p.x * 0.9, p.y * 0.12 + uTime * 0.3));
-            vec3 water = vec3(0.004, 0.008, 0.02) * (0.5 + ripple * 0.9);
-            float islandGlow = exp(-max(r - 15.0, 0.0) / 7.0);
-            float craterRefl = exp(-abs(p.x) / 4.5) * smoothstep(70.0, 16.0, p.y) * step(14.0, p.y);
-            float sparkle = smoothstep(0.62, 0.9, streak);
-            vec3 col = water + uLava * (islandGlow * 0.035 + craterRefl * (0.06 + uGlow * 0.14)) * (0.3 + streak * 0.7 + sparkle * 1.5);
-            col *= smoothstep(130.0, 40.0, r) * 0.85 + 0.15;
-            gl_FragColor = vec4(col, 1.0);
-          }
-        `,
-      })
-      const sea = new THREE.Mesh(new THREE.PlaneGeometry(380, 380), seaMat)
-      sea.rotation.x = -Math.PI / 2
-      sea.position.y = 0
-      group.add(sea)
+    // crater lake
+    const lake = new THREE.Mesh(new THREE.CircleGeometry(1.4, 40), lavaMaterial(true))
+    lake.rotation.x = -Math.PI / 2
+    lake.position.y = H - 1.54
+    g.add(lake)
 
-      // volcano cone
-      const profile: THREE.Vector2[] = [
-        new THREE.Vector2(0, H - 1.6),
-        new THREE.Vector2(1.2, H - 1.6),
-        new THREE.Vector2(1.5, H - 0.7),
-        new THREE.Vector2(1.8, H),
-      ]
-      for (let i = 0; i <= 44; i++) {
-        const r = 2.1 + (i / 44) * (RS + 2.5 - 2.1)
-        profile.push(new THREE.Vector2(r, slope(r)))
-      }
-      const coneGeo = new THREE.LatheGeometry(profile, 110)
-      const cp = coneGeo.getAttribute('position') as THREE.BufferAttribute
-      for (let i = 0; i < cp.count; i++) {
-        const x = cp.getX(i)
-        const z = cp.getZ(i)
-        const r = Math.hypot(x, z)
-        if (r > 1.95) cp.setY(i, rock(Math.atan2(z, x), r))
-      }
-      coneGeo.computeVertexNormals()
-      const rockMat = new THREE.MeshStandardMaterial({ color: 0x2a2426, roughness: 0.94, metalness: 0.02, flatShading: true })
-      const cone = new THREE.Mesh(coneGeo, rockMat)
-      group.add(cone)
-
-      // crater lake
-      const lake = new THREE.Mesh(new THREE.CircleGeometry(1.4, 40), lavaMaterial(true))
-      lake.rotation.x = -Math.PI / 2
-      lake.position.y = H - 1.54
-      group.add(lake)
-
-      // lava rivers
-      const riverEnds: { x: number; z: number }[] = []
-      const softTex = softTexture()
-      for (let n = 0; n < 4; n++) {
-        const theta0 = (n / 4) * Math.PI * 2 + rng.next() * 0.9 + 0.3
-        const samples = 46
-        const verts = new Float32Array(samples * 2 * 3)
-        const uvs = new Float32Array(samples * 2 * 2)
-        const idx: number[] = []
-        let endX = 0
-        let endZ = 0
-        for (let i = 0; i < samples; i++) {
-          const s = i / (samples - 1)
-          const r = 1.75 + s * (RS - 1.5)
-          const theta = theta0 + Math.sin(s * 4.5 + theta0) * 0.22 + s * 0.18
-          const y = rock(theta, r) + 0.07
-          const w = (0.24 + s * 0.6) * 0.5
-          const cx = Math.cos(theta) * r
-          const cz = Math.sin(theta) * r
-          const px = -Math.sin(theta) * w
-          const pz = Math.cos(theta) * w
-          verts.set([cx + px, y, cz + pz, cx - px, y, cz - pz], i * 6)
-          uvs.set([0, s, 1, s], i * 4)
-          if (i < samples - 1) {
-            const a = i * 2
-            idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
-          }
-          if (i === samples - 1) {
-            endX = cx
-            endZ = cz
-          }
-          if (i === Math.floor(samples * 0.5)) {
-            const l = new THREE.PointLight(lava, 7, 10)
-            l.position.set(cx, y + 0.8, cz)
-            riverLights.push(l)
-            group.add(l)
-          }
+    // rivers + shoreline steam
+    const steams: THREE.Points[] = []
+    const riverLights: THREE.PointLight[] = []
+    for (let n = 0; n < opts.rivers; n++) {
+      const theta0 = (n / opts.rivers) * Math.PI * 2 + rng.next() * 0.6 + 0.2
+      const long = rng.next() > 0.3
+      const samples = 46
+      const verts = new Float32Array(samples * 2 * 3)
+      const uvs = new Float32Array(samples * 2 * 2)
+      const idx: number[] = []
+      let endX = 0
+      let endZ = 0
+      const reach = long ? RS - 1.5 : 5 + rng.next() * 6
+      for (let i = 0; i < samples; i++) {
+        const s = i / (samples - 1)
+        const r = 1.75 + s * reach
+        const theta = theta0 + Math.sin(s * 4.5 + theta0) * 0.22 + s * 0.18
+        const y = rock(theta, r) + 0.07
+        const w = (0.2 + s * (long ? 0.55 : 0.3)) * 0.5
+        const cx = Math.cos(theta) * r
+        const cz = Math.sin(theta) * r
+        const px = -Math.sin(theta) * w
+        const pz = Math.cos(theta) * w
+        verts.set([cx + px, y, cz + pz, cx - px, y, cz - pz], i * 6)
+        uvs.set([0, s, 1, s], i * 4)
+        if (i < samples - 1) {
+          const a = i * 2
+          idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
         }
-        const geo = new THREE.BufferGeometry()
-        geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
-        geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
-        geo.setIndex(idx)
-        const river = new THREE.Mesh(geo, lavaMaterial(false))
-        river.renderOrder = 1
-        group.add(river)
-        riverEnds.push({ x: endX, z: endZ })
+        if (i === samples - 1) {
+          endX = cx
+          endZ = cz
+        }
+        if (opts.main && long && i === Math.floor(samples * 0.5)) {
+          const l = new THREE.PointLight(lava, 7, 10)
+          l.position.set(cx, y + 0.8, cz)
+          riverLights.push(l)
+          g.add(l)
+        }
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+      geo.setIndex(idx)
+      const river = new THREE.Mesh(geo, lavaMaterial(false))
+      river.renderOrder = 1
+      g.add(river)
 
-        // steam where lava meets the sea
+      if (long) {
         const steamCount = 36
         const stp = new Float32Array(steamCount * 3)
         for (let i = 0; i < steamCount; i++) {
@@ -4621,118 +4780,153 @@ export function createCaldera(): VisualStyle {
         stGeo.setAttribute('position', new THREE.BufferAttribute(stp, 3))
         const steam = new THREE.Points(
           stGeo,
-          new THREE.PointsMaterial({
-            map: softTex,
-            color: 0x8890a0,
-            size: 2.6,
-            transparent: true,
-            opacity: 0.16,
-            depthWrite: false,
-            sizeAttenuation: true,
-          }),
+          new THREE.PointsMaterial({ map: softTex, color: 0x8890a0, size: 2.6, transparent: true, opacity: 0.16, depthWrite: false, sizeAttenuation: true }),
         )
+        steam.frustumCulled = false
         steams.push(steam)
-        group.add(steam)
+        g.add(steam)
       }
+    }
 
-      // ash column (two size classes)
-      const makeAsh = (count: number, size: number) => {
-        const pos = new Float32Array(count * 3)
-        const col = new Float32Array(count * 3)
-        for (let i = 0; i < count; i++) {
-          ashState.push({ angle: rng.next() * Math.PI * 2, h: rng.next(), speed: 0.6 + rng.next() * 0.8, wob: rng.next() })
-        }
-        const geo = new THREE.BufferGeometry()
-        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-        geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
-        return new THREE.Points(
-          geo,
-          new THREE.PointsMaterial({
-            map: softTex,
-            vertexColors: true,
-            size,
-            transparent: true,
-            opacity: 0.6,
-            depthWrite: false,
-            sizeAttenuation: true,
-          }),
-        )
+    // ash column (two size classes)
+    const ashState: { angle: number; h: number; speed: number; wob: number }[] = []
+    const makeAsh = (count: number, size: number) => {
+      const pos = new Float32Array(count * 3)
+      const col = new Float32Array(count * 3)
+      for (let i = 0; i < count; i++) {
+        ashState.push({ angle: rng.next() * Math.PI * 2, h: rng.next(), speed: 0.6 + rng.next() * 0.8, wob: rng.next() })
       }
-      ashState.length = 0
-      ashNear = makeAsh(150, 5.5)
-      ashFar = makeAsh(150, 3.4)
-      group.add(ashFar, ashNear)
-
-      // lightning bolts inside the ash cloud
-      for (let i = 0; i < 3; i++) {
-        const geo = new THREE.BufferGeometry()
-        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(10 * 3), 3))
-        const line = new THREE.Line(
-          geo,
-          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
-        )
-        line.frustumCulled = false
-        line.visible = false
-        bolts.push({ line, life: 0 })
-        group.add(line)
-      }
-
-      // embers
-      const emberCount = 520
-      const ep = new Float32Array(emberCount * 3)
-      emberState.length = 0
-      for (let i = 0; i < emberCount; i++) {
-        emberState.push({ x: 0, y: -10, z: 0, vy: 0, vx: 0, life: rng.next() * 6 })
-      }
-      const emberGeo = new THREE.BufferGeometry()
-      emberGeo.setAttribute('position', new THREE.BufferAttribute(ep, 3))
-      embers = new THREE.Points(
-        emberGeo,
-        new THREE.PointsMaterial({
-          color: lava,
-          size: 0.16,
-          transparent: true,
-          opacity: 0.85,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-          sizeAttenuation: true,
-        }),
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+      const pts = new THREE.Points(
+        geo,
+        new THREE.PointsMaterial({ map: softTex, vertexColors: true, size, transparent: true, opacity: 0.6, depthWrite: false, sizeAttenuation: true }),
       )
-      group.add(embers)
+      pts.frustumCulled = false
+      return pts
+    }
+    const ashFar = makeAsh(opts.ashPer, 4.6)
+    const ashNear = makeAsh(opts.ashPer, 7.2)
+    g.add(ashFar, ashNear)
 
-      // lava bombs
-      const bombGeo = new THREE.SphereGeometry(0.24, 10, 8)
-      bombs.length = 0
-      for (let i = 0; i < 18; i++) {
-        const mesh = new THREE.Mesh(bombGeo, new THREE.MeshBasicMaterial({ color: lava }))
-        mesh.visible = false
-        const tGeo = new THREE.BufferGeometry()
-        tGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL * 3), 3))
-        tGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TRAIL * 3), 3))
-        const trail = new THREE.Line(
-          tGeo,
-          new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
-        )
-        trail.frustumCulled = false
-        trail.visible = false
-        bombs.push({ mesh, trail, pos: new THREE.Vector3(), vel: new THREE.Vector3(), active: false, hist: new Float32Array(TRAIL * 3) })
-        group.add(mesh, trail)
+    // lightning inside the cloud
+    const bolts: { line: THREE.Line; life: number }[] = []
+    for (let i = 0; i < opts.bolts; i++) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(10 * 3), 3))
+      const line = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
+      )
+      line.frustumCulled = false
+      bolts.push({ line, life: 0 })
+      g.add(line)
+    }
+
+    // embers
+    const emberState: { x: number; y: number; z: number; vy: number; vx: number; life: number }[] = []
+    for (let i = 0; i < opts.embers; i++) emberState.push({ x: 0, y: -10, z: 0, vy: 0, vx: 0, life: rng.next() * 6 })
+    const emberGeo = new THREE.BufferGeometry()
+    emberGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(opts.embers * 3), 3))
+    const embers = new THREE.Points(
+      emberGeo,
+      new THREE.PointsMaterial({ color: lava, size: 0.16, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }),
+    )
+    embers.frustumCulled = false
+    g.add(embers)
+
+    // lava bombs
+    const bombGeo = new THREE.SphereGeometry(0.24, 10, 8)
+    const bombs: Bomb[] = []
+    for (let i = 0; i < opts.bombs; i++) {
+      const mesh = new THREE.Mesh(bombGeo, new THREE.MeshBasicMaterial({ color: lava }))
+      mesh.frustumCulled = false
+      const tGeo = new THREE.BufferGeometry()
+      tGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL * 3), 3))
+      tGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TRAIL * 3), 3))
+      const trail = new THREE.Line(tGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }))
+      trail.frustumCulled = false
+      mesh.position.y = -50
+      bombs.push({ mesh, trail, pos: new THREE.Vector3(), vel: new THREE.Vector3(), active: false, hist: new Float32Array(TRAIL * 3) })
+      g.add(mesh, trail)
+    }
+
+    // impact splashes (spark bursts) and residual burns
+    const splashes: Splash[] = []
+    for (let i = 0; i < Math.max(4, Math.floor(opts.bombs * 0.6)); i++) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SPARKS * 3), 3))
+      const points = new THREE.Points(
+        geo,
+        new THREE.PointsMaterial({ map: softTex, color: lava, size: 0.22, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }),
+      )
+      points.frustumCulled = false
+      points.position.y = -50
+      splashes.push({ points, vel: new Float32Array(SPARKS * 3), age: 0, life: 1, active: false, watery: false })
+      g.add(points)
+    }
+    const burns: Burn[] = []
+    const burnGeo = new THREE.CircleGeometry(1, 18)
+    for (let i = 0; i < Math.max(6, opts.bombs); i++) {
+      const mesh = new THREE.Mesh(
+        burnGeo,
+        new THREE.MeshBasicMaterial({ color: lava, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+      )
+      mesh.frustumCulled = false
+      mesh.position.y = -50
+      burns.push({ mesh, age: 0, life: 1, active: false, size: 0.5 })
+      g.add(mesh)
+    }
+
+    const craterLight = new THREE.PointLight(lava, 30, 45)
+    craterLight.position.set(0, H + 1.5, 0)
+    g.add(craterLight)
+
+    let eruptionTimer = opts.main ? 22 : 30 + rng.next() * 50
+    let eruptionAge = -1
+    let eruption = 0
+    let bombTimer = 1 + rng.next()
+    let boltCooldown = 0
+    let craterFlash = 0
+    let localClock = 0
+
+    const fireSplash = (x: number, y: number, z: number, watery: boolean, launch: boolean) => {
+      const s = splashes.find((sp) => !sp.active)
+      if (!s) return
+      s.active = true
+      s.watery = watery
+      s.age = 0
+      s.life = watery ? 1.4 : launch ? 0.9 : 1.1
+      const pos = s.points.geometry.getAttribute('position') as THREE.BufferAttribute
+      for (let i = 0; i < SPARKS; i++) {
+        const ang = Math.random() * Math.PI * 2
+        const spd = watery ? 0.6 + Math.random() * 1.4 : 1.5 + Math.random() * 3.5
+        pos.setXYZ(i, x, y, z)
+        s.vel[i * 3] = Math.cos(ang) * spd * (launch ? 0.6 : 1)
+        s.vel[i * 3 + 1] = watery ? 1.2 + Math.random() * 2 : (launch ? 4 : 1.5) + Math.random() * 4.5
+        s.vel[i * 3 + 2] = Math.sin(ang) * spd * (launch ? 0.6 : 1)
       }
+      pos.needsUpdate = true
+      s.points.position.set(0, 0, 0)
+    }
+    const leaveBurn = (x: number, y: number, z: number) => {
+      const b = burns.find((bb) => !bb.active) ?? burns[0]
+      b.active = true
+      b.age = 0
+      b.life = 7 + Math.random() * 6
+      rockNormal(x, z, tmpV)
+      b.mesh.position.set(x + tmpV.x * 0.06, y + tmpV.y * 0.06, z + tmpV.z * 0.06)
+      b.mesh.quaternion.setFromUnitVectors(upZ, tmpV)
+      b.size = 0.35 + Math.random() * 0.3
+      b.mesh.scale.setScalar(b.size)
+    }
 
-      craterLight = new THREE.PointLight(lava, 30, 45)
-      craterLight.position.set(0, H + 1.5, 0)
-      const hemi = new THREE.HemisphereLight(0x1a2a4a, 0x060306, 0.75)
-      group.add(craterLight, hemi)
-
-      scene.add(group)
-    },
-    update(m, time, dt, palette) {
-      if (!group || !cameraRef) return
-      clock += dt
-
+    const update = (m: AudioMetrics, time: number, dt: number, sens: number) => {
+      localClock += dt
       // eruption schedule
       if (eruptionAge < 0) {
-        eruptionTimer -= dt
+        eruptionTimer -= dt * (0.7 + sens * 0.3)
         if (eruptionTimer <= 0) eruptionAge = 0
         eruption = Math.max(0, eruption - dt * 0.5)
       } else {
@@ -4743,63 +4937,44 @@ export function createCaldera(): VisualStyle {
         else {
           eruption = 0
           eruptionAge = -1
-          eruptionTimer = 45 + Math.random() * 30
+          eruptionTimer = (opts.main ? 45 : 70) + Math.random() * 40
         }
       }
-
-      const lift = (c: THREE.Color, target: number) => {
-        const luma = Math.max(c.r * 0.299 + c.g * 0.587 + c.b * 0.114, 0.05)
-        return c.multiplyScalar(target / luma)
-      }
-      lava.setRGB(...palette.a).lerp(new THREE.Color(1, 0.42, 0.08), 0.45)
-      const hsl = { h: 0, s: 0, l: 0 }
-      lava.getHSL(hsl)
-      lava.setHSL(hsl.h, Math.max(hsl.s, 0.92), 0.5)
-      lift(lava, 0.42)
-      bolt.setRGB(...palette.c).lerp(new THREE.Color(1, 1, 1), 0.4)
-      lift(bolt, 0.9)
-
-      const hot = m.bass + eruption * 0.8
-      for (const mat of lavaMats) {
-        mat.uniforms.uTime.value = time
-        mat.uniforms.uHot.value = hot
-        mat.uniforms.uFlow.value = 0.8 + m.bass * 1.6 + eruption * 1.2
-      }
-      if (seaMat) {
-        seaMat.uniforms.uTime.value = time
-        seaMat.uniforms.uGlow.value = m.bass * 0.8 + eruption
-      }
-      if (skyMat) skyMat.uniforms.uGlow.value = m.energy + eruption * 1.5
-      if (craterLight) {
-        craterLight.color.copy(lava)
-        craterLight.intensity = 26 + m.bass * 30 + eruption * 60 + (m.beat ? 12 : 0)
-      }
+      craterFlash = Math.max(0, craterFlash - dt * 2.2)
+      const hot = m.bass + eruption * 0.8 + craterFlash * 0.4
+      craterLight.color.copy(lava)
+      craterLight.intensity = 26 + m.bass * 30 + eruption * 60 + craterFlash * 60 + (m.beat ? 12 : 0)
       for (const l of riverLights) {
         l.color.copy(lava)
         l.intensity = 6 + m.bass * 6 + eruption * 4
       }
 
       // ash column
-      const ashPoints = [ashFar, ashNear]
       let si = 0
-      for (const pts of ashPoints) {
-        if (!pts) continue
+      for (const pts of [ashFar, ashNear]) {
         const pos = pts.geometry.getAttribute('position') as THREE.BufferAttribute
         const col = pts.geometry.getAttribute('color') as THREE.BufferAttribute
+        const pa = pos.array as Float32Array
+        const ca = col.array as Float32Array
         for (let i = 0; i < pos.count; i++, si++) {
           const a = ashState[si]
-          a.h += dt * a.speed * (0.045 + eruption * 0.05)
+          a.h += dt * a.speed * (0.04 + eruption * 0.05)
           if (a.h > 1) a.h -= 1
-          const radius = (1.1 + a.h * 6.5) * (0.7 + a.wob * 0.6)
+          const radius = (1.1 + a.h * 7.5) * (0.7 + a.wob * 0.6)
           const ang = a.angle + a.h * 2.2 + time * 0.12
-          pos.setXYZ(i, Math.cos(ang) * radius + a.h * a.h * 7, H + 0.4 + a.h * 21, Math.sin(ang) * radius)
-          const lit = Math.pow(1 - a.h, 2.6) * (0.35 + eruption * 0.6 + m.bass * 0.3)
+          const ix = i * 3
+          pa[ix] = Math.cos(ang) * radius + a.h * a.h * 8
+          pa[ix + 1] = H + 0.4 + a.h * 26
+          pa[ix + 2] = Math.sin(ang) * radius
+          const lit = Math.pow(1 - a.h, 2.6) * (0.35 + eruption * 0.6 + m.bass * 0.3 + craterFlash * 0.5)
           const grey = 0.018 + a.wob * 0.012
-          col.setXYZ(i, lava.r * lit + grey, lava.g * lit + grey, lava.b * lit + grey)
+          ca[ix] = lava.r * lit + grey
+          ca[ix + 1] = lava.g * lit + grey
+          ca[ix + 2] = lava.b * lit + grey
         }
         pos.needsUpdate = true
         col.needsUpdate = true
-        ;(pts.material as THREE.PointsMaterial).opacity = 0.42 + eruption * 0.2
+        ;(pts.material as THREE.PointsMaterial).opacity = 0.48 + eruption * 0.22
       }
 
       // lightning in the cloud
@@ -4810,14 +4985,12 @@ export function createCaldera(): VisualStyle {
           const mat = b.line.material as THREE.LineBasicMaterial
           mat.opacity = Math.max(0, b.life / 0.22) * (0.6 + Math.random() * 0.4)
           mat.color.copy(bolt)
-          if (b.life <= 0) b.line.visible = false
         } else if (boltCooldown <= 0 && (m.treble > 0.45 - eruption * 0.2 || Math.random() < eruption * 0.02)) {
           boltCooldown = 0.35 + Math.random() * 0.8 - eruption * 0.2
           b.life = 0.22
-          b.line.visible = true
           const pos = b.line.geometry.getAttribute('position') as THREE.BufferAttribute
           let x = (Math.random() - 0.5) * 6 + 3
-          let y = H + 4 + Math.random() * 9
+          let y = H + 4 + Math.random() * 10
           let z = (Math.random() - 0.5) * 6
           for (let k = 0; k < pos.count; k++) {
             pos.setXYZ(k, x, y, z)
@@ -4827,12 +5000,15 @@ export function createCaldera(): VisualStyle {
           }
           pos.needsUpdate = true
           break
+        } else {
+          ;(b.line.material as THREE.LineBasicMaterial).opacity = 0
         }
       }
 
       // embers
-      if (embers) {
+      {
         const pos = embers.geometry.getAttribute('position') as THREE.BufferAttribute
+        const pa = pos.array as Float32Array
         for (let i = 0; i < pos.count; i++) {
           const e = emberState[i]
           e.life -= dt
@@ -4840,30 +5016,37 @@ export function createCaldera(): VisualStyle {
             e.x = (Math.random() - 0.5) * 1.6
             e.z = (Math.random() - 0.5) * 1.6
             e.y = H - 0.2
-            e.vy = 1.5 + Math.random() * 2.5 + eruption * 3
+            e.vy = 1.5 + Math.random() * 2.5 + eruption * 3 + craterFlash * 3
             e.vx = 0.4 + Math.random() * 0.8
             e.life = 3 + Math.random() * 4
           }
           e.y += e.vy * dt
-          e.x += (e.vx + Math.sin(clock * 2 + i) * 0.5) * dt
-          e.z += Math.cos(clock * 1.7 + i * 0.3) * 0.5 * dt
+          e.x += (e.vx + Math.sin(localClock * 2 + i) * 0.5) * dt
+          e.z += Math.cos(localClock * 1.7 + i * 0.3) * 0.5 * dt
           e.vy *= 1 - dt * 0.25
-          pos.setXYZ(i, e.x, e.y, e.z)
+          pa[i * 3] = e.x
+          pa[i * 3 + 1] = e.y
+          pa[i * 3 + 2] = e.z
         }
         pos.needsUpdate = true
         const em = embers.material as THREE.PointsMaterial
-        em.color.copy(lava).lerp(new THREE.Color(1, 0.85, 0.5), 0.3)
+        em.color.copy(lava).lerp(emberTint, 0.3)
         em.opacity = 0.4 + m.energy * 0.6
         em.size = 0.14 + m.treble * 0.08
       }
 
-      // lava bombs
+      // lava bombs: rate scales with the Sensitivity slider
       bombTimer -= dt
       let spawn = 0
-      if (m.beat) spawn += 1 + Math.floor(m.bass * 2)
+      if (m.beat) spawn += 1 + Math.floor(m.bass * 2 * sens)
+      if (Math.random() < dt * m.energy * sens * (opts.main ? 0.9 : 0.4)) spawn++
       if (bombTimer <= 0) {
         spawn += 1
-        bombTimer = eruption > 0.3 ? 0.14 : 2.4 + Math.random() * 2
+        bombTimer = (eruption > 0.3 ? 0.13 : (opts.main ? 2.2 : 5) + Math.random() * 2) / Math.max(0.4, sens)
+      }
+      if (spawn > 0) {
+        craterFlash = Math.min(1.4, craterFlash + 0.3 * spawn)
+        fireSplash(0, H - 0.6, 0, false, true)
       }
       for (const b of bombs) {
         if (spawn > 0 && !b.active) {
@@ -4874,8 +5057,6 @@ export function createCaldera(): VisualStyle {
           b.pos.set((Math.random() - 0.5) * 0.8, H + 0.1, (Math.random() - 0.5) * 0.8)
           b.vel.set(Math.cos(ang) * spd, 8 + Math.random() * 6 + eruption * 5, Math.sin(ang) * spd)
           for (let k = 0; k < TRAIL; k++) b.hist.set([b.pos.x, b.pos.y, b.pos.z], k * 3)
-          b.mesh.visible = true
-          b.trail.visible = true
         }
         if (!b.active) continue
         b.vel.y -= 9.8 * dt
@@ -4884,8 +5065,13 @@ export function createCaldera(): VisualStyle {
         const ground = r < RS ? rock(Math.atan2(b.pos.z, b.pos.x), r) : 0
         if (b.pos.y < ground) {
           b.active = false
-          b.mesh.visible = false
-          b.trail.visible = false
+          b.mesh.position.y = -50
+          const watery = r >= RS - 0.3
+          fireSplash(b.pos.x, ground + 0.1, b.pos.z, watery, false)
+          if (!watery) leaveBurn(b.pos.x, ground, b.pos.z)
+          const tp = b.trail.geometry.getAttribute('position') as THREE.BufferAttribute
+          for (let k = 0; k < TRAIL; k++) tp.setXYZ(k, 0, -50, 0)
+          tp.needsUpdate = true
           continue
         }
         b.mesh.position.copy(b.pos)
@@ -4907,31 +5093,269 @@ export function createCaldera(): VisualStyle {
         tc.needsUpdate = true
       }
 
-      for (let i = 0; i < steams.length; i++) {
-        const pts = steams[i]
+      // splashes
+      for (const s of splashes) {
+        if (!s.active) continue
+        s.age += dt
+        const k = s.age / s.life
+        const mat = s.points.material as THREE.PointsMaterial
+        if (k >= 1) {
+          s.active = false
+          mat.opacity = 0
+          s.points.position.y = -50
+          continue
+        }
+        const pos = s.points.geometry.getAttribute('position') as THREE.BufferAttribute
+        const pa = pos.array as Float32Array
+        const grav = s.watery ? 2.5 : 9.8
+        for (let i = 0; i < SPARKS; i++) {
+          const ix = i * 3
+          s.vel[ix + 1] -= grav * dt
+          pa[ix] += s.vel[ix] * dt
+          pa[ix + 1] += s.vel[ix + 1] * dt
+          pa[ix + 2] += s.vel[ix + 2] * dt
+        }
+        pos.needsUpdate = true
+        if (s.watery) {
+          mat.color.copy(steamBase).multiplyScalar(1.3)
+          mat.size = 0.6 + k * 1.8
+          mat.opacity = (1 - k) * 0.4
+        } else {
+          mat.color.copy(lava).multiplyScalar(2.2)
+          mat.size = 0.42 - k * 0.15
+          mat.opacity = 1 - k * k
+        }
+      }
+
+      // residual burns cool down slowly
+      for (const b of burns) {
+        if (!b.active) continue
+        b.age += dt
+        const k = b.age / b.life
+        const mat = b.mesh.material as THREE.MeshBasicMaterial
+        if (k >= 1) {
+          b.active = false
+          mat.opacity = 0
+          b.mesh.position.y = -50
+          continue
+        }
+        const glow = Math.pow(1 - k, 1.6)
+        mat.color.copy(lava).multiplyScalar(0.6 + glow * 1.2 + m.bass * 0.4)
+        mat.opacity = 0.08 + glow * 0.5
+        b.mesh.scale.setScalar(b.size * (1 + k * 0.8))
+      }
+
+      for (const pts of steams) {
         const pos = pts.geometry.getAttribute('position') as THREE.BufferAttribute
+        const pa = pos.array as Float32Array
         for (let k = 0; k < pos.count; k++) {
-          let y = pos.getY(k) + dt * (0.5 + (k % 3) * 0.2)
-          let x = pos.getX(k) + dt * 0.3
+          const ix = k * 3
+          let y = pa[ix + 1] + dt * (0.5 + (k % 3) * 0.2)
+          let x = pa[ix] + dt * 0.3
           if (y > 4.5) {
             y = 0
             x -= 1.4
           }
-          pos.setXY(k, x, y)
+          pa[ix] = x
+          pa[ix + 1] = y
         }
         pos.needsUpdate = true
         const sm = pts.material as THREE.PointsMaterial
-        sm.color.copy(lava).multiplyScalar(0.25).add(new THREE.Color(0.35, 0.36, 0.4))
+        sm.color.copy(lava).multiplyScalar(0.25).add(steamBase)
         sm.opacity = 0.12 + m.bass * 0.08
       }
+      return eruption
+    }
 
-      const shake = eruption * 0.14
+    return { group: g, update }
+  }
+
+  return {
+    id: 'caldera',
+    label: 'Caldera',
+    hint: 'Erupting volcano at night',
+    bloom: { base: 0.42, pulse: 0.18 },
+    mount(scene, camera, palette) {
+      cameraRef = camera
+      camera.position.set(0, 6.5, 40)
+      camera.lookAt(0, 8.5, 0)
+      scene.fog = new THREE.FogExp2(0x040308, 0.0065)
+      scene.background = new THREE.Color(0x040308)
+      group = new THREE.Group()
+      const rng = styleRng(palette.seed)
+      lavaMats.length = 0
+      volcanoes.length = 0
+      rockMat = makeRockMaterial()
+
+      // sky dome
+      skyMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: { uLava: { value: lava }, uGlow: { value: 0 }, uCamDir: { value: new THREE.Vector2(0, 1) } },
+        vertexShader: `
+          varying vec3 vDir;
+          void main() {
+            vDir = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uLava;
+          uniform float uGlow;
+          uniform vec2 uCamDir;
+          varying vec3 vDir;
+          void main() {
+            vec3 d = normalize(vDir);
+            vec3 top = vec3(0.006, 0.008, 0.02);
+            vec3 hor = vec3(0.035, 0.025, 0.055);
+            vec3 col = mix(hor, top, smoothstep(0.0, 0.55, d.y));
+            float along = dot(d.xz, uCamDir);
+            float side = d.x * uCamDir.y - d.z * uCamDir.x;
+            float glow = exp(-pow(side * 2.6, 2.0)) * exp(-max(d.y, 0.0) * 6.0) * smoothstep(0.1, -0.3, along);
+            col += uLava * glow * (0.12 + uGlow * 0.25);
+            col += uLava * exp(-max(d.y, 0.0) * 9.0) * 0.03;
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      const sky = new THREE.Mesh(new THREE.SphereGeometry(230, 32, 16), skyMat)
+      sky.renderOrder = -3
+      sky.frustumCulled = false
+      group.add(sky)
+
+      const starCount = 1100
+      const sp = new Float32Array(starCount * 3)
+      for (let i = 0; i < starCount; i++) {
+        const th = rng.next() * Math.PI * 2
+        const ph = Math.acos(rng.next() * 0.9 + 0.05)
+        sp[i * 3] = 200 * Math.sin(ph) * Math.cos(th)
+        sp[i * 3 + 1] = 200 * Math.cos(ph)
+        sp[i * 3 + 2] = 200 * Math.sin(ph) * Math.sin(th)
+      }
+      const starGeo = new THREE.BufferGeometry()
+      starGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3))
+      group.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xc8d4ee, size: 0.6, transparent: true, opacity: 0.7, depthWrite: false, fog: false })))
+
+      // volcanoes: the main caldera plus distant neighbours around the map
+      const layout = [
+        { x: 0, z: 0, scale: 1, rivers: 7, ashPer: 300, embers: 560, bombs: 26, bolts: 3, main: true },
+        { x: -82, z: -58, scale: 0.72, rivers: 4, ashPer: 120, embers: 160, bombs: 10, bolts: 1, main: false },
+        { x: 78, z: -92, scale: 0.9, rivers: 5, ashPer: 140, embers: 180, bombs: 12, bolts: 1, main: false },
+        { x: 96, z: 44, scale: 0.6, rivers: 3, ashPer: 100, embers: 120, bombs: 8, bolts: 1, main: false },
+        { x: -60, z: 96, scale: 0.68, rivers: 4, ashPer: 110, embers: 140, bombs: 8, bolts: 1, main: false },
+      ]
+      const softTex = softTexture()
+      for (const l of layout) {
+        const v = buildVolcano(rng, softTex, l)
+        v.group.position.set(l.x, 0, l.z)
+        volcanoes.push(v)
+        group.add(v.group)
+      }
+
+      // sea
+      seaMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uGlow: { value: 0 },
+          uLava: { value: lava },
+          uCam: { value: new THREE.Vector2(0, 1) },
+          uVolc: { value: layout.map((l) => new THREE.Vector3(l.x, l.z, l.scale)) },
+        },
+        vertexShader: `
+          varying vec3 vWorld;
+          void main() {
+            vec4 w = modelMatrix * vec4(position, 1.0);
+            vWorld = w.xyz;
+            gl_Position = projectionMatrix * viewMatrix * w;
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime, uGlow;
+          uniform vec3 uLava;
+          uniform vec2 uCam;
+          uniform vec3 uVolc[${layout.length}];
+          varying vec3 vWorld;
+          ${noiseGLSL}
+          void main() {
+            vec2 p = vWorld.xz;
+            float r = length(p);
+            float ripple = fbm(p * 0.35 + vec2(uTime * 0.15, uTime * 0.08));
+            vec2 perp = vec2(-uCam.y, uCam.x);
+            float along = dot(p, uCam);
+            float across = dot(p, perp);
+            float streak = fbm(vec2(across * 0.9, along * 0.12 + uTime * 0.3));
+            vec3 water = vec3(0.004, 0.008, 0.02) * (0.5 + ripple * 0.9);
+            float islandGlow = 0.0;
+            for (int i = 0; i < ${layout.length}; i++) {
+              float d = length(p - uVolc[i].xy);
+              islandGlow += exp(-max(d - ${RS.toFixed(1)} * uVolc[i].z, 0.0) / (7.0 * uVolc[i].z)) * uVolc[i].z;
+            }
+            float craterRefl = exp(-abs(across) / 4.5) * smoothstep(70.0, 16.0, along) * step(14.0, along);
+            float sparkle = smoothstep(0.62, 0.9, streak);
+            vec3 col = water + uLava * (islandGlow * 0.035 + craterRefl * (0.06 + uGlow * 0.14)) * (0.3 + streak * 0.7 + sparkle * 1.5);
+            col *= smoothstep(220.0, 60.0, r) * 0.85 + 0.15;
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      const sea = new THREE.Mesh(new THREE.PlaneGeometry(520, 520), seaMat)
+      sea.rotation.x = -Math.PI / 2
+      sea.frustumCulled = false
+      group.add(sea)
+
+      group.add(new THREE.HemisphereLight(0x1a2a4a, 0x060306, 0.75))
+      scene.add(group)
+    },
+    update(m, time, dt, palette, _speed, sensitivity) {
+      if (!group || !cameraRef) return
+      const sens = sensitivity ?? 1
+
+      const lift = (c: THREE.Color, target: number) => {
+        const luma = Math.max(c.r * 0.299 + c.g * 0.587 + c.b * 0.114, 0.05)
+        return c.multiplyScalar(target / luma)
+      }
+      lava.setRGB(...palette.a).lerp(scratch.setRGB(1, 0.42, 0.08), 0.45)
+      const hsl = { h: 0, s: 0, l: 0 }
+      lava.getHSL(hsl)
+      lava.setHSL(hsl.h, Math.max(hsl.s, 0.92), 0.5)
+      lift(lava, 0.42)
+      bolt.setRGB(...palette.c).lerp(scratch.setRGB(1, 1, 1), 0.4)
+      lift(bolt, 0.9)
+
+      let maxEruption = 0
+      for (const v of volcanoes) maxEruption = Math.max(maxEruption, v.update(m, time, dt, sens))
+
+      const hot = m.bass + maxEruption * 0.8
+      for (const mat of lavaMats) {
+        mat.uniforms.uTime.value = time
+        mat.uniforms.uHot.value = hot
+        mat.uniforms.uFlow.value = 0.8 + m.bass * 1.6 + maxEruption * 1.2
+      }
+      rockUniforms.uTime.value = time
+      rockUniforms.uHot.value = m.bass * 0.8 + maxEruption * 0.6
+
+      // camera orbits the main caldera; the Speed slider sets the orbit rate (time is speed-scaled)
+      const orbit = time * 0.05
+      const shake = maxEruption * 0.14
+      const radius = 41 + Math.sin(time * 0.09) * 3
       cameraRef.position.set(
-        Math.sin(time * 0.07) * 8 + (Math.random() - 0.5) * shake,
-        6.5 + Math.sin(time * 0.11) * 0.7 + (Math.random() - 0.5) * shake,
-        40 + Math.cos(time * 0.05) * 1.5,
+        Math.sin(orbit) * radius + (Math.random() - 0.5) * shake,
+        6.8 + Math.sin(time * 0.11) * 0.9 + (Math.random() - 0.5) * shake,
+        Math.cos(orbit) * radius,
       )
       cameraRef.lookAt(0, 8.5, 0)
+      const cx = cameraRef.position.x
+      const cz = cameraRef.position.z
+      const cl = Math.hypot(cx, cz) || 1
+      if (seaMat) {
+        seaMat.uniforms.uTime.value = time
+        seaMat.uniforms.uGlow.value = m.bass * 0.8 + maxEruption
+        seaMat.uniforms.uCam.value.set(cx / cl, cz / cl)
+      }
+      if (skyMat) {
+        skyMat.uniforms.uGlow.value = m.energy + maxEruption * 1.5
+        skyMat.uniforms.uCamDir.value.set(cx / cl, cz / cl)
+      }
     },
     dispose(scene) {
       if (group) {
@@ -4944,17 +5368,9 @@ export function createCaldera(): VisualStyle {
       cameraRef = null
       seaMat = null
       skyMat = null
-      craterLight = null
-      embers = null
-      ashNear = null
-      ashFar = null
+      rockMat = null
       lavaMats.length = 0
-      riverLights.length = 0
-      bolts.length = 0
-      steams.length = 0
-      bombs.length = 0
-      ashState.length = 0
-      emberState.length = 0
+      volcanoes.length = 0
     },
   }
 }

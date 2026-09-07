@@ -129,6 +129,8 @@ export class VisualizerEngine {
     this.current.mount(this.scene, this.camera, this.palette)
     this.current.resize?.(this.host.clientWidth, this.host.clientHeight)
     this.camera.updateProjectionMatrix()
+    // compile every visible material up front so late-appearing actors don't hitch the frame
+    this.renderer.compile(this.scene, this.camera)
   }
 
   nextStyle() {
@@ -196,7 +198,7 @@ export class VisualizerEngine {
         beat: live.beat && scale(live.energy) > 0.18,
       }
       const livePalette = evolvePalette(this.palette, metrics, time, this.speed)
-      this.current?.update(metrics, time, dt, livePalette, this.speed)
+      this.current?.update(metrics, time, dt, livePalette, this.speed, this.sensitivity)
       const bloom = this.current?.bloom
       const targetBloom = (bloom?.base ?? 0.22) + metrics.energy * (bloom?.pulse ?? 0.28)
       this.bloomStrength += (targetBloom - this.bloomStrength) * 0.06
