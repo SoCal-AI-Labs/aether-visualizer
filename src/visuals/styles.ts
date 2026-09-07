@@ -3837,6 +3837,1458 @@ export function createTide(): VisualStyle {
   }
 }
 
+export function createAbyss(): VisualStyle {
+  let group: THREE.Group | null = null
+  let cameraRef: THREE.PerspectiveCamera | null = null
+  let snow: THREE.Points | null = null
+  let beam: THREE.Mesh | null = null
+  let school: THREE.Points | null = null
+  let flash = 0
+  let clock = 0
+  let wavePos = 0
+  let waveAmp = 0
+  let beamTimer = 8
+  let beamActive = false
+  let beamT = 0
+  let schoolTimer = 16
+  let schoolActive = false
+  let schoolT = 0
+  let schoolY = 0
+  let schoolZ = -8
+  let schoolDir = 1
+  let giantTimer = 30
+  let giantActive = false
+  let giantT = 0
+  const TENT_PTS = 16
+  type Tentacle = { line: THREE.Line; len: number; angle: number; radius: number; phase: number; arm: boolean }
+  type Jelly = {
+    root: THREE.Group
+    bellMat: THREE.ShaderMaterial
+    innerMat: THREE.ShaderMaterial
+    tentacles: Tentacle[]
+    base: THREE.Vector3
+    drift: THREE.Vector3
+    phase: number
+    rate: number
+    band: number
+    size: number
+    accent: boolean
+    flash: number
+    giant: boolean
+  }
+  const jellies: Jelly[] = []
+  const tmp = new THREE.Vector3()
+  const colA = new THREE.Color()
+  const colC = new THREE.Color()
+
+  const bellShader = (inner: boolean) =>
+    new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uColor: { value: new THREE.Color(0x44ccff) },
+        uGlow: { value: 0.3 },
+        uPulse: { value: 0 },
+        uFlash: { value: 0 },
+        uTime: { value: 0 },
+      },
+      vertexShader: `
+        uniform float uPulse;
+        varying vec3 vNormal;
+        varying vec3 vView;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec3 p = position;
+          float rim = smoothstep(1.0, 0.42, uv.y);
+          p.xz *= 1.0 - uPulse * 0.2 * rim;
+          p.y *= 1.0 + uPulse * 0.12;
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          vNormal = normalize(normalMatrix * normal);
+          vView = normalize(-mv.xyz);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uGlow, uFlash, uTime;
+        varying vec3 vNormal;
+        varying vec3 vView;
+        varying vec2 vUv;
+        void main() {
+          float fres = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), ${inner ? '1.6' : '2.4'});
+          float ribs = 0.5 + 0.5 * sin(vUv.x * 6.2831853 * 8.0 + uTime * 0.5);
+          float rim = smoothstep(0.55, 0.42, vUv.y);
+          float body = ${inner ? '0.18' : '0.05'} + fres * ${inner ? '1.0' : '1.25'} + ribs * 0.05 + rim * 0.28;
+          vec3 col = uColor * body * (0.7 + uGlow * 0.9) + uColor * uFlash * 1.2 + vec3(uFlash * 0.4);
+          float alpha = clamp(${inner ? '0.3' : '0.12'} + fres * 0.7 + rim * 0.3, 0.0, 1.0);
+          gl_FragColor = vec4(col * alpha, alpha);
+        }
+      `,
+    })
+
+  const makeJelly = (rng: ReturnType<typeof styleRng>, size: number, giant: boolean, accent: boolean): Jelly => {
+    const root = new THREE.Group()
+    const bellGeo = new THREE.SphereGeometry(1, 30, 16, 0, Math.PI * 2, 0, Math.PI / 2 + 0.3)
+    const bellMat = bellShader(false)
+    const bell = new THREE.Mesh(bellGeo, bellMat)
+    bell.scale.set(1, 0.78, 1)
+    const innerMat = bellShader(true)
+    const inner = new THREE.Mesh(bellGeo, innerMat)
+    inner.scale.set(0.62, 0.5, 0.62)
+    inner.position.y = -0.05
+    root.add(bell, inner)
+    const tentacles: Tentacle[] = []
+    const tentCount = giant ? 14 : 9
+    for (let i = 0; i < tentCount + 4; i++) {
+      const arm = i >= tentCount
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TENT_PTS * 3), 3))
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TENT_PTS * 3), 3))
+      const line = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({
+          vertexColors: true,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          opacity: arm ? 0.9 : 0.7,
+        }),
+      )
+      line.frustumCulled = false
+      const angle = arm ? (i - tentCount) * (Math.PI / 2) + 0.4 : (i / tentCount) * Math.PI * 2
+      tentacles.push({
+        line,
+        len: arm ? 2.2 + rng.next() * 0.8 : 3.2 + rng.next() * 2.2,
+        angle,
+        radius: arm ? 0.3 : 0.86 + rng.next() * 0.08,
+        phase: rng.next() * Math.PI * 2,
+        arm,
+      })
+      root.add(line)
+    }
+    root.scale.setScalar(size)
+    return {
+      root,
+      bellMat,
+      innerMat,
+      tentacles,
+      base: new THREE.Vector3(),
+      drift: new THREE.Vector3((rng.next() - 0.5) * 0.3, 0.05 + rng.next() * 0.1, (rng.next() - 0.5) * 0.2),
+      phase: rng.next() * Math.PI * 2,
+      rate: giant ? 0.5 : 0.9 + rng.next() * 0.8,
+      band: Math.floor(rng.next() * 40),
+      size,
+      accent,
+      flash: 0,
+      giant,
+    }
+  }
+
+  return {
+    id: 'abyss',
+    label: 'Abyss',
+    hint: 'Deep-sea jellyfish swarm',
+    bloom: { base: 0.5, pulse: 0.2 },
+    mount(scene, camera, palette) {
+      cameraRef = camera
+      camera.position.set(0, 0.5, 6)
+      camera.lookAt(0, 0, -8)
+      scene.fog = new THREE.FogExp2(0x010409, 0.05)
+      scene.background = new THREE.Color(0x010409)
+      group = new THREE.Group()
+      const rng = styleRng(palette.seed)
+      clock = 0
+      flash = 0
+      beamTimer = 8
+      beamActive = false
+      schoolTimer = 16
+      schoolActive = false
+      giantTimer = 30
+      giantActive = false
+
+      for (let i = 0; i < 13; i++) {
+        const jelly = makeJelly(rng, 0.45 + rng.next() * 0.85, false, i % 2 === 1)
+        jelly.base.set((rng.next() - 0.5) * 20, (rng.next() - 0.5) * 12, -4 - rng.next() * 17)
+        jelly.root.position.copy(jelly.base)
+        jellies.push(jelly)
+        group.add(jelly.root)
+      }
+      const giant = makeJelly(rng, 3.6, true, false)
+      giant.base.set(2, -22, -20)
+      giant.root.position.copy(giant.base)
+      giant.root.visible = false
+      jellies.push(giant)
+      group.add(giant.root)
+
+      const snowCount = 1800
+      const sp = new Float32Array(snowCount * 3)
+      for (let i = 0; i < snowCount; i++) {
+        sp[i * 3] = (rng.next() - 0.5) * 34
+        sp[i * 3 + 1] = (rng.next() - 0.5) * 24
+        sp[i * 3 + 2] = -rng.next() * 26 + 2
+      }
+      const snowGeo = new THREE.BufferGeometry()
+      snowGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3))
+      snow = new THREE.Points(
+        snowGeo,
+        new THREE.PointsMaterial({
+          color: 0x9fb8d8,
+          size: 0.045,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: 0.45,
+          depthWrite: false,
+        }),
+      )
+      group.add(snow)
+
+      const beamGeo = new THREE.ConeGeometry(3.2, 26, 24, 1, true)
+      beamGeo.translate(0, -13, 0)
+      beam = new THREE.Mesh(
+        beamGeo,
+        new THREE.MeshBasicMaterial({
+          color: 0xbfe0ff,
+          transparent: true,
+          opacity: 0.045,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          blending: THREE.AdditiveBlending,
+        }),
+      )
+      beam.position.set(0, 13, -12)
+      beam.visible = false
+      group.add(beam)
+
+      const schoolCount = 90
+      const fp = new Float32Array(schoolCount * 3)
+      for (let i = 0; i < schoolCount; i++) {
+        fp[i * 3] = (rng.next() - 0.5) * 5
+        fp[i * 3 + 1] = (rng.next() - 0.5) * 1.6
+        fp[i * 3 + 2] = (rng.next() - 0.5) * 2
+      }
+      const schoolGeo = new THREE.BufferGeometry()
+      schoolGeo.setAttribute('position', new THREE.BufferAttribute(fp, 3))
+      schoolGeo.setAttribute('aBase', new THREE.BufferAttribute(fp.slice(), 3))
+      school = new THREE.Points(
+        schoolGeo,
+        new THREE.PointsMaterial({
+          color: 0xffe08a,
+          size: 0.11,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: 0.9,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      )
+      school.visible = false
+      group.add(school)
+
+      scene.add(group)
+    },
+    update(m, time, dt, palette) {
+      if (!group || !cameraRef) return
+      clock += dt
+      flash = Math.max(flash * Math.exp(-dt * 6), 0)
+      colorFrom(palette.a, colA)
+      colorFrom(palette.c, colC)
+      const lift = (c: THREE.Color, target: number) => {
+        const luma = Math.max(c.r * 0.299 + c.g * 0.587 + c.b * 0.114, 0.05)
+        return c.multiplyScalar(target / luma)
+      }
+      lift(colA, 0.7)
+      lift(colC, 0.7)
+
+      waveAmp += (m.bass - waveAmp) * Math.min(1, dt * 8)
+      wavePos = (wavePos + dt * 1.1) % 1.3
+
+      if (m.beat) {
+        let best: Jelly | null = null
+        let bestD = Infinity
+        for (const j of jellies) {
+          if (!j.root.visible) continue
+          const d = j.root.position.distanceTo(cameraRef.position)
+          if (d < bestD) {
+            bestD = d
+            best = j
+          }
+        }
+        if (best) best.flash = 1
+        flash = 1
+      }
+
+      const camPos = cameraRef.position
+      for (const j of jellies) {
+        if (!j.root.visible) continue
+        const spec = m.spectrum[j.band % m.spectrum.length]
+        j.phase += dt * j.rate * (0.8 + spec * 2.2 + m.energy * 0.6)
+        const pulse = 0.5 + 0.5 * Math.sin(j.phase)
+        const kick = Math.max(0, Math.sin(j.phase)) // upward thrust during contraction
+        j.flash = Math.max(j.flash * Math.exp(-dt * 5), 0)
+
+        if (j.giant) {
+          giantT += dt / 46
+          j.root.position.set(j.base.x + Math.sin(clock * 0.2) * 1.2, -22 + giantT * 40, j.base.z)
+          if (giantT >= 1) {
+            giantActive = false
+            j.root.visible = false
+            giantTimer = 60 + Math.random() * 30
+          }
+        } else {
+          j.base.x += j.drift.x * dt
+          j.base.y += (j.drift.y * kick * 0.6 - 0.02) * dt
+          j.base.z += j.drift.z * dt
+          if (j.base.x > 12) j.base.x = -12
+          if (j.base.x < -12) j.base.x = 12
+          if (j.base.y > 8) j.base.y = -8
+          if (j.base.y < -8) j.base.y = 8
+          if (j.base.z > -2) j.base.z = -22
+          if (j.base.z < -22) j.base.z = -2
+          j.root.position.copy(j.base)
+          j.root.position.y += Math.sin(clock * 0.6 + j.phase * 0.2) * 0.2
+        }
+        j.root.rotation.z = j.drift.x * 0.9 + Math.sin(clock * 0.4 + j.phase) * 0.08
+        j.root.rotation.x = -j.drift.z * 0.9
+
+        const col = j.accent ? colC : colA
+        j.bellMat.uniforms.uColor.value.copy(col)
+        j.bellMat.uniforms.uGlow.value = 0.25 + spec * 1.3 + m.energy * 0.4
+        j.bellMat.uniforms.uPulse.value = pulse
+        j.bellMat.uniforms.uFlash.value = j.flash
+        j.bellMat.uniforms.uTime.value = time
+        j.innerMat.uniforms.uColor.value.copy(col).lerp(new THREE.Color(1, 1, 1), 0.25)
+        j.innerMat.uniforms.uGlow.value = 0.4 + spec * 1.6
+        j.innerMat.uniforms.uPulse.value = pulse
+        j.innerMat.uniforms.uFlash.value = j.flash
+        j.innerMat.uniforms.uTime.value = time
+
+        for (const t of j.tentacles) {
+          const pos = t.line.geometry.getAttribute('position') as THREE.BufferAttribute
+          const cols = t.line.geometry.getAttribute('color') as THREE.BufferAttribute
+          const x0 = Math.cos(t.angle) * t.radius * (1 - pulse * 0.2)
+          const z0 = Math.sin(t.angle) * t.radius * (1 - pulse * 0.2)
+          const len = t.len * (1 + kick * 0.12)
+          for (let k = 0; k < TENT_PTS; k++) {
+            const s = k / (TENT_PTS - 1)
+            const sway = Math.sin(clock * 1.3 + t.phase + s * 3.2) * 0.32 * s * s + Math.sin(clock * 0.7 + t.phase * 1.7 + s * 5.0) * 0.12 * s
+            const drag = -j.drift.x * s * s * 2.5
+            pos.setXYZ(k, x0 + sway + drag, -0.05 - s * len, z0 + Math.cos(clock * 1.1 + t.phase + s * 2.6) * 0.28 * s * s)
+            const wave = Math.exp(-Math.pow((s - wavePos) * 6, 2)) * waveAmp * 1.4
+            const fade = Math.pow(1 - s, t.arm ? 0.8 : 1.3)
+            const glow = (t.arm ? 0.6 : 0.4) * fade * (0.5 + spec * 1.2) + wave + j.flash * fade
+            cols.setXYZ(k, col.r * glow + wave * 0.3, col.g * glow + wave * 0.3, col.b * glow + wave * 0.3)
+          }
+          pos.needsUpdate = true
+          cols.needsUpdate = true
+        }
+        // face away from camera slightly for depth
+        tmp.subVectors(j.root.position, camPos)
+      }
+
+      if (!giantActive) {
+        giantTimer -= dt
+        if (giantTimer <= 0) {
+          giantActive = true
+          giantT = 0
+          const g = jellies[jellies.length - 1]
+          g.root.visible = true
+        }
+      }
+
+      if (snow) {
+        const pos = snow.geometry.getAttribute('position') as THREE.BufferAttribute
+        const fall = (0.18 + m.energy * 0.15) * dt
+        for (let i = 0; i < pos.count; i++) {
+          let y = pos.getY(i) - fall * (0.6 + ((i * 7) % 5) * 0.2)
+          let x = pos.getX(i) + Math.sin(clock * 0.3 + i) * 0.002
+          if (y < -12) {
+            y = 12
+            x = (Math.random() - 0.5) * 34
+          }
+          pos.setXY(i, x, y)
+        }
+        pos.needsUpdate = true
+        const sm = snow.material as THREE.PointsMaterial
+        sm.opacity = 0.35 + m.treble * 0.3 + flash * 0.2
+      }
+
+      if (beam) {
+        if (!beamActive) {
+          beamTimer -= dt
+          if (beamTimer <= 0) {
+            beamActive = true
+            beamT = 0
+            beam.visible = true
+          }
+        } else {
+          beamT += dt / 14
+          const sweep = Math.sin(beamT * Math.PI * 1.5) * 9
+          beam.position.set(sweep, 13, -13 + Math.sin(beamT * 4) * 2)
+          beam.rotation.z = -sweep * 0.035
+          beam.rotation.x = Math.sin(beamT * 2.2) * 0.2
+          const bm = beam.material as THREE.MeshBasicMaterial
+          bm.opacity = 0.045 * Math.sin(Math.min(1, beamT) * Math.PI) + 0.002
+          if (beamT >= 1) {
+            beamActive = false
+            beam.visible = false
+            beamTimer = 28 + Math.random() * 22
+          }
+        }
+      }
+
+      if (school) {
+        if (!schoolActive) {
+          schoolTimer -= dt
+          if (schoolTimer <= 0) {
+            schoolActive = true
+            schoolT = 0
+            schoolDir = Math.random() > 0.5 ? 1 : -1
+            schoolY = (Math.random() - 0.5) * 8
+            schoolZ = -5 - Math.random() * 12
+            school.visible = true
+          }
+        } else {
+          schoolT += dt / 11
+          const pos = school.geometry.getAttribute('position') as THREE.BufferAttribute
+          const base = school.geometry.getAttribute('aBase') as THREE.BufferAttribute
+          const cx = (schoolT * 2 - 1) * -schoolDir * 20
+          for (let i = 0; i < pos.count; i++) {
+            const wig = Math.sin(clock * 6 + i * 0.7) * 0.15
+            pos.setXYZ(
+              i,
+              cx + base.getX(i) * (1 + Math.sin(clock * 0.8 + i) * 0.15),
+              schoolY + base.getY(i) + Math.sin(clock * 1.4 + base.getX(i)) * 0.5 + wig,
+              schoolZ + base.getZ(i),
+            )
+          }
+          pos.needsUpdate = true
+          const sm = school.material as THREE.PointsMaterial
+          sm.color.copy(colC).lerp(new THREE.Color(1, 0.9, 0.55), 0.5)
+          sm.size = 0.1 + m.treble * 0.05
+          if (schoolT >= 1) {
+            schoolActive = false
+            school.visible = false
+            schoolTimer = 24 + Math.random() * 20
+          }
+        }
+      }
+
+      cameraRef.position.set(Math.sin(time * 0.05) * 1.2, 0.5 + Math.sin(time * 0.08) * 0.6, 6)
+      cameraRef.lookAt(Math.sin(time * 0.04) * 2.5, Math.sin(time * 0.06) * 1.2, -8)
+    },
+    dispose(scene) {
+      if (group) {
+        scene.remove(group)
+        disposeObject(group)
+      }
+      scene.fog = new THREE.FogExp2(0x030308, 0.028)
+      scene.background = new THREE.Color(0x030308)
+      group = null
+      cameraRef = null
+      snow = null
+      beam = null
+      school = null
+      jellies.length = 0
+    },
+  }
+}
+
+export function createCaldera(): VisualStyle {
+  let group: THREE.Group | null = null
+  let cameraRef: THREE.PerspectiveCamera | null = null
+  let seaMat: THREE.ShaderMaterial | null = null
+  let skyMat: THREE.ShaderMaterial | null = null
+  let craterLight: THREE.PointLight | null = null
+  let embers: THREE.Points | null = null
+  let ashNear: THREE.Points | null = null
+  let ashFar: THREE.Points | null = null
+  const lavaMats: THREE.ShaderMaterial[] = []
+  const riverLights: THREE.PointLight[] = []
+  const bolts: { line: THREE.Line; life: number }[] = []
+  const steams: THREE.Points[] = []
+  type Bomb = { mesh: THREE.Mesh; trail: THREE.Line; pos: THREE.Vector3; vel: THREE.Vector3; active: boolean; hist: Float32Array }
+  const bombs: Bomb[] = []
+  const ashState: { angle: number; h: number; speed: number; wob: number }[] = []
+  const emberState: { x: number; y: number; z: number; vy: number; vx: number; life: number }[] = []
+  const lava = new THREE.Color(0xff6a1a)
+  const bolt = new THREE.Color(0x9ad0ff)
+  let clock = 0
+  let eruptionTimer = 24
+  let eruptionAge = -1
+  let eruption = 0
+  let bombTimer = 1
+  let boltCooldown = 0
+  const TRAIL = 12
+  const H = 13
+  const RS = 16
+
+  const slope = (r: number) => {
+    if (r <= 1.8) return H
+    if (r >= RS) return -(r - RS) * 0.7
+    return H * Math.pow(1 - (r - 1.8) / (RS - 1.8), 1.35)
+  }
+  const bump = (theta: number, r: number) => {
+    const ridge = Math.min(1, Math.max(0, (r - 1.9) / 1.6)) * Math.min(1, Math.max(0, (RS - r) / 3))
+    return (
+      (0.42 * Math.sin(theta * 5 + r * 0.8) +
+        0.28 * Math.sin(theta * 11 - r * 1.7) +
+        0.16 * Math.sin(theta * 23 + r * 3.1) +
+        0.1 * Math.sin(theta * 37 + r * 5)) *
+      ridge
+    )
+  }
+  const rock = (theta: number, r: number) => slope(r) + bump(theta, r)
+
+  const noiseGLSL = `
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      float a = hash(i);
+      float b = hash(i + vec2(1.0, 0.0));
+      float c = hash(i + vec2(0.0, 1.0));
+      float d = hash(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+    float fbm(vec2 p) {
+      float v = 0.0;
+      float amp = 0.5;
+      for (int i = 0; i < 4; i++) {
+        v += amp * noise(p);
+        p *= 2.03;
+        amp *= 0.5;
+      }
+      return v;
+    }
+  `
+
+  const lavaMaterial = (lake: boolean) => {
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uTime: { value: 0 },
+        uHot: { value: 0 },
+        uFlow: { value: 1 },
+        uLava: { value: lava },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime, uHot, uFlow;
+        uniform vec3 uLava;
+        varying vec2 vUv;
+        ${noiseGLSL}
+        void main() {
+          ${
+            lake
+              ? `
+          vec2 q = (vUv - 0.5) * 2.0;
+          float rr = length(q);
+          float n = fbm(q * 2.4 + vec2(uTime * 0.12, -uTime * 0.07));
+          float n2 = noise(q * 7.0 - uTime * 0.25);
+          float hot = smoothstep(0.25, 0.62, n + n2 * 0.2) + (1.0 - smoothstep(0.0, 0.55, rr)) * 0.6;
+          float edge = smoothstep(1.0, 0.85, rr);
+          `
+              : `
+          float n = fbm(vec2(vUv.x * 3.0, vUv.y * 16.0 - uTime * uFlow));
+          float n2 = noise(vec2(vUv.x * 9.0 + 3.0, vUv.y * 40.0 - uTime * uFlow * 1.6));
+          float hot = smoothstep(0.3 + vUv.y * 0.22 - uHot * 0.12, 0.72, n + n2 * 0.25);
+          float edge = smoothstep(0.5, 0.22, abs(vUv.x - 0.5));
+          `
+          }
+          vec3 crust = vec3(0.07, 0.025, 0.01);
+          vec3 col = mix(crust, uLava * (1.1 + uHot * 1.1), clamp(hot, 0.0, 1.0));
+          col += uLava * 0.12;
+          gl_FragColor = vec4(col * edge, edge);
+        }
+      `,
+    })
+    lavaMats.push(mat)
+    return mat
+  }
+
+  const softTexture = () =>
+    canvasTexture(64, 64, (ctx) => {
+      const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+      g.addColorStop(0, 'rgba(255,255,255,0.9)')
+      g.addColorStop(0.4, 'rgba(255,255,255,0.35)')
+      g.addColorStop(1, 'rgba(255,255,255,0)')
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, 64, 64)
+    })
+
+  return {
+    id: 'caldera',
+    label: 'Caldera',
+    hint: 'Erupting volcano at night',
+    bloom: { base: 0.42, pulse: 0.18 },
+    mount(scene, camera, palette) {
+      cameraRef = camera
+      camera.position.set(0, 6.5, 40)
+      camera.lookAt(0, 8.5, 0)
+      scene.fog = new THREE.FogExp2(0x040308, 0.008)
+      scene.background = new THREE.Color(0x040308)
+      group = new THREE.Group()
+      const rng = styleRng(palette.seed)
+      clock = 0
+      eruptionTimer = 24
+      eruptionAge = -1
+      eruption = 0
+      lavaMats.length = 0
+
+      // sky dome
+      skyMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: { uLava: { value: lava }, uGlow: { value: 0 } },
+        vertexShader: `
+          varying vec3 vDir;
+          void main() {
+            vDir = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uLava;
+          uniform float uGlow;
+          varying vec3 vDir;
+          void main() {
+            vec3 d = normalize(vDir);
+            vec3 top = vec3(0.006, 0.008, 0.02);
+            vec3 hor = vec3(0.035, 0.025, 0.055);
+            vec3 col = mix(hor, top, smoothstep(0.0, 0.55, d.y));
+            float glow = exp(-pow(d.x * 2.6, 2.0)) * exp(-max(d.y, 0.0) * 6.0) * smoothstep(0.1, -0.3, d.z);
+            col += uLava * glow * (0.12 + uGlow * 0.25);
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      const sky = new THREE.Mesh(new THREE.SphereGeometry(180, 32, 16), skyMat)
+      sky.renderOrder = -3
+      group.add(sky)
+
+      const starCount = 900
+      const sp = new Float32Array(starCount * 3)
+      for (let i = 0; i < starCount; i++) {
+        const th = rng.next() * Math.PI * 2
+        const ph = Math.acos(rng.next() * 0.9 + 0.05)
+        sp[i * 3] = 160 * Math.sin(ph) * Math.cos(th)
+        sp[i * 3 + 1] = 160 * Math.cos(ph)
+        sp[i * 3 + 2] = 160 * Math.sin(ph) * Math.sin(th)
+      }
+      const starGeo = new THREE.BufferGeometry()
+      starGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3))
+      group.add(
+        new THREE.Points(
+          starGeo,
+          new THREE.PointsMaterial({ color: 0xc8d4ee, size: 0.5, transparent: true, opacity: 0.7, depthWrite: false, fog: false }),
+        ),
+      )
+
+      // sea
+      seaMat = new THREE.ShaderMaterial({
+        uniforms: { uTime: { value: 0 }, uGlow: { value: 0 }, uLava: { value: lava } },
+        vertexShader: `
+          varying vec3 vWorld;
+          void main() {
+            vec4 w = modelMatrix * vec4(position, 1.0);
+            vWorld = w.xyz;
+            gl_Position = projectionMatrix * viewMatrix * w;
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime, uGlow;
+          uniform vec3 uLava;
+          varying vec3 vWorld;
+          ${noiseGLSL}
+          void main() {
+            vec2 p = vWorld.xz;
+            float r = length(p);
+            float ripple = fbm(p * 0.35 + vec2(uTime * 0.15, uTime * 0.08));
+            float streak = fbm(vec2(p.x * 0.9, p.y * 0.12 + uTime * 0.3));
+            vec3 water = vec3(0.004, 0.008, 0.02) * (0.5 + ripple * 0.9);
+            float islandGlow = exp(-max(r - 15.0, 0.0) / 7.0);
+            float craterRefl = exp(-abs(p.x) / 4.5) * smoothstep(70.0, 16.0, p.y) * step(14.0, p.y);
+            float sparkle = smoothstep(0.62, 0.9, streak);
+            vec3 col = water + uLava * (islandGlow * 0.035 + craterRefl * (0.06 + uGlow * 0.14)) * (0.3 + streak * 0.7 + sparkle * 1.5);
+            col *= smoothstep(130.0, 40.0, r) * 0.85 + 0.15;
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      const sea = new THREE.Mesh(new THREE.PlaneGeometry(380, 380), seaMat)
+      sea.rotation.x = -Math.PI / 2
+      sea.position.y = 0
+      group.add(sea)
+
+      // volcano cone
+      const profile: THREE.Vector2[] = [
+        new THREE.Vector2(0, H - 1.6),
+        new THREE.Vector2(1.2, H - 1.6),
+        new THREE.Vector2(1.5, H - 0.7),
+        new THREE.Vector2(1.8, H),
+      ]
+      for (let i = 0; i <= 44; i++) {
+        const r = 2.1 + (i / 44) * (RS + 2.5 - 2.1)
+        profile.push(new THREE.Vector2(r, slope(r)))
+      }
+      const coneGeo = new THREE.LatheGeometry(profile, 110)
+      const cp = coneGeo.getAttribute('position') as THREE.BufferAttribute
+      for (let i = 0; i < cp.count; i++) {
+        const x = cp.getX(i)
+        const z = cp.getZ(i)
+        const r = Math.hypot(x, z)
+        if (r > 1.95) cp.setY(i, rock(Math.atan2(z, x), r))
+      }
+      coneGeo.computeVertexNormals()
+      const rockMat = new THREE.MeshStandardMaterial({ color: 0x2a2426, roughness: 0.94, metalness: 0.02, flatShading: true })
+      const cone = new THREE.Mesh(coneGeo, rockMat)
+      group.add(cone)
+
+      // crater lake
+      const lake = new THREE.Mesh(new THREE.CircleGeometry(1.4, 40), lavaMaterial(true))
+      lake.rotation.x = -Math.PI / 2
+      lake.position.y = H - 1.54
+      group.add(lake)
+
+      // lava rivers
+      const riverEnds: { x: number; z: number }[] = []
+      const softTex = softTexture()
+      for (let n = 0; n < 4; n++) {
+        const theta0 = (n / 4) * Math.PI * 2 + rng.next() * 0.9 + 0.3
+        const samples = 46
+        const verts = new Float32Array(samples * 2 * 3)
+        const uvs = new Float32Array(samples * 2 * 2)
+        const idx: number[] = []
+        let endX = 0
+        let endZ = 0
+        for (let i = 0; i < samples; i++) {
+          const s = i / (samples - 1)
+          const r = 1.75 + s * (RS - 1.5)
+          const theta = theta0 + Math.sin(s * 4.5 + theta0) * 0.22 + s * 0.18
+          const y = rock(theta, r) + 0.07
+          const w = (0.24 + s * 0.6) * 0.5
+          const cx = Math.cos(theta) * r
+          const cz = Math.sin(theta) * r
+          const px = -Math.sin(theta) * w
+          const pz = Math.cos(theta) * w
+          verts.set([cx + px, y, cz + pz, cx - px, y, cz - pz], i * 6)
+          uvs.set([0, s, 1, s], i * 4)
+          if (i < samples - 1) {
+            const a = i * 2
+            idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
+          }
+          if (i === samples - 1) {
+            endX = cx
+            endZ = cz
+          }
+          if (i === Math.floor(samples * 0.5)) {
+            const l = new THREE.PointLight(lava, 7, 10)
+            l.position.set(cx, y + 0.8, cz)
+            riverLights.push(l)
+            group.add(l)
+          }
+        }
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+        geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+        geo.setIndex(idx)
+        const river = new THREE.Mesh(geo, lavaMaterial(false))
+        river.renderOrder = 1
+        group.add(river)
+        riverEnds.push({ x: endX, z: endZ })
+
+        // steam where lava meets the sea
+        const steamCount = 36
+        const stp = new Float32Array(steamCount * 3)
+        for (let i = 0; i < steamCount; i++) {
+          stp[i * 3] = endX + (rng.next() - 0.5) * 2.5
+          stp[i * 3 + 1] = rng.next() * 4
+          stp[i * 3 + 2] = endZ + (rng.next() - 0.5) * 2.5
+        }
+        const stGeo = new THREE.BufferGeometry()
+        stGeo.setAttribute('position', new THREE.BufferAttribute(stp, 3))
+        const steam = new THREE.Points(
+          stGeo,
+          new THREE.PointsMaterial({
+            map: softTex,
+            color: 0x8890a0,
+            size: 2.6,
+            transparent: true,
+            opacity: 0.16,
+            depthWrite: false,
+            sizeAttenuation: true,
+          }),
+        )
+        steams.push(steam)
+        group.add(steam)
+      }
+
+      // ash column (two size classes)
+      const makeAsh = (count: number, size: number) => {
+        const pos = new Float32Array(count * 3)
+        const col = new Float32Array(count * 3)
+        for (let i = 0; i < count; i++) {
+          ashState.push({ angle: rng.next() * Math.PI * 2, h: rng.next(), speed: 0.6 + rng.next() * 0.8, wob: rng.next() })
+        }
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+        return new THREE.Points(
+          geo,
+          new THREE.PointsMaterial({
+            map: softTex,
+            vertexColors: true,
+            size,
+            transparent: true,
+            opacity: 0.6,
+            depthWrite: false,
+            sizeAttenuation: true,
+          }),
+        )
+      }
+      ashState.length = 0
+      ashNear = makeAsh(150, 5.5)
+      ashFar = makeAsh(150, 3.4)
+      group.add(ashFar, ashNear)
+
+      // lightning bolts inside the ash cloud
+      for (let i = 0; i < 3; i++) {
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(10 * 3), 3))
+        const line = new THREE.Line(
+          geo,
+          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
+        )
+        line.frustumCulled = false
+        line.visible = false
+        bolts.push({ line, life: 0 })
+        group.add(line)
+      }
+
+      // embers
+      const emberCount = 520
+      const ep = new Float32Array(emberCount * 3)
+      emberState.length = 0
+      for (let i = 0; i < emberCount; i++) {
+        emberState.push({ x: 0, y: -10, z: 0, vy: 0, vx: 0, life: rng.next() * 6 })
+      }
+      const emberGeo = new THREE.BufferGeometry()
+      emberGeo.setAttribute('position', new THREE.BufferAttribute(ep, 3))
+      embers = new THREE.Points(
+        emberGeo,
+        new THREE.PointsMaterial({
+          color: lava,
+          size: 0.16,
+          transparent: true,
+          opacity: 0.85,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          sizeAttenuation: true,
+        }),
+      )
+      group.add(embers)
+
+      // lava bombs
+      const bombGeo = new THREE.SphereGeometry(0.24, 10, 8)
+      bombs.length = 0
+      for (let i = 0; i < 18; i++) {
+        const mesh = new THREE.Mesh(bombGeo, new THREE.MeshBasicMaterial({ color: lava }))
+        mesh.visible = false
+        const tGeo = new THREE.BufferGeometry()
+        tGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL * 3), 3))
+        tGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TRAIL * 3), 3))
+        const trail = new THREE.Line(
+          tGeo,
+          new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
+        )
+        trail.frustumCulled = false
+        trail.visible = false
+        bombs.push({ mesh, trail, pos: new THREE.Vector3(), vel: new THREE.Vector3(), active: false, hist: new Float32Array(TRAIL * 3) })
+        group.add(mesh, trail)
+      }
+
+      craterLight = new THREE.PointLight(lava, 30, 45)
+      craterLight.position.set(0, H + 1.5, 0)
+      const hemi = new THREE.HemisphereLight(0x1a2a4a, 0x060306, 0.75)
+      group.add(craterLight, hemi)
+
+      scene.add(group)
+    },
+    update(m, time, dt, palette) {
+      if (!group || !cameraRef) return
+      clock += dt
+
+      // eruption schedule
+      if (eruptionAge < 0) {
+        eruptionTimer -= dt
+        if (eruptionTimer <= 0) eruptionAge = 0
+        eruption = Math.max(0, eruption - dt * 0.5)
+      } else {
+        eruptionAge += dt
+        if (eruptionAge < 1.5) eruption = eruptionAge / 1.5
+        else if (eruptionAge < 9) eruption = 1
+        else if (eruptionAge < 12) eruption = 1 - (eruptionAge - 9) / 3
+        else {
+          eruption = 0
+          eruptionAge = -1
+          eruptionTimer = 45 + Math.random() * 30
+        }
+      }
+
+      const lift = (c: THREE.Color, target: number) => {
+        const luma = Math.max(c.r * 0.299 + c.g * 0.587 + c.b * 0.114, 0.05)
+        return c.multiplyScalar(target / luma)
+      }
+      lava.setRGB(...palette.a).lerp(new THREE.Color(1, 0.42, 0.08), 0.45)
+      const hsl = { h: 0, s: 0, l: 0 }
+      lava.getHSL(hsl)
+      lava.setHSL(hsl.h, Math.max(hsl.s, 0.92), 0.5)
+      lift(lava, 0.42)
+      bolt.setRGB(...palette.c).lerp(new THREE.Color(1, 1, 1), 0.4)
+      lift(bolt, 0.9)
+
+      const hot = m.bass + eruption * 0.8
+      for (const mat of lavaMats) {
+        mat.uniforms.uTime.value = time
+        mat.uniforms.uHot.value = hot
+        mat.uniforms.uFlow.value = 0.8 + m.bass * 1.6 + eruption * 1.2
+      }
+      if (seaMat) {
+        seaMat.uniforms.uTime.value = time
+        seaMat.uniforms.uGlow.value = m.bass * 0.8 + eruption
+      }
+      if (skyMat) skyMat.uniforms.uGlow.value = m.energy + eruption * 1.5
+      if (craterLight) {
+        craterLight.color.copy(lava)
+        craterLight.intensity = 26 + m.bass * 30 + eruption * 60 + (m.beat ? 12 : 0)
+      }
+      for (const l of riverLights) {
+        l.color.copy(lava)
+        l.intensity = 6 + m.bass * 6 + eruption * 4
+      }
+
+      // ash column
+      const ashPoints = [ashFar, ashNear]
+      let si = 0
+      for (const pts of ashPoints) {
+        if (!pts) continue
+        const pos = pts.geometry.getAttribute('position') as THREE.BufferAttribute
+        const col = pts.geometry.getAttribute('color') as THREE.BufferAttribute
+        for (let i = 0; i < pos.count; i++, si++) {
+          const a = ashState[si]
+          a.h += dt * a.speed * (0.045 + eruption * 0.05)
+          if (a.h > 1) a.h -= 1
+          const radius = (1.1 + a.h * 6.5) * (0.7 + a.wob * 0.6)
+          const ang = a.angle + a.h * 2.2 + time * 0.12
+          pos.setXYZ(i, Math.cos(ang) * radius + a.h * a.h * 7, H + 0.4 + a.h * 21, Math.sin(ang) * radius)
+          const lit = Math.pow(1 - a.h, 2.6) * (0.35 + eruption * 0.6 + m.bass * 0.3)
+          const grey = 0.018 + a.wob * 0.012
+          col.setXYZ(i, lava.r * lit + grey, lava.g * lit + grey, lava.b * lit + grey)
+        }
+        pos.needsUpdate = true
+        col.needsUpdate = true
+        ;(pts.material as THREE.PointsMaterial).opacity = 0.42 + eruption * 0.2
+      }
+
+      // lightning in the cloud
+      boltCooldown -= dt
+      for (const b of bolts) {
+        if (b.life > 0) {
+          b.life -= dt
+          const mat = b.line.material as THREE.LineBasicMaterial
+          mat.opacity = Math.max(0, b.life / 0.22) * (0.6 + Math.random() * 0.4)
+          mat.color.copy(bolt)
+          if (b.life <= 0) b.line.visible = false
+        } else if (boltCooldown <= 0 && (m.treble > 0.45 - eruption * 0.2 || Math.random() < eruption * 0.02)) {
+          boltCooldown = 0.35 + Math.random() * 0.8 - eruption * 0.2
+          b.life = 0.22
+          b.line.visible = true
+          const pos = b.line.geometry.getAttribute('position') as THREE.BufferAttribute
+          let x = (Math.random() - 0.5) * 6 + 3
+          let y = H + 4 + Math.random() * 9
+          let z = (Math.random() - 0.5) * 6
+          for (let k = 0; k < pos.count; k++) {
+            pos.setXYZ(k, x, y, z)
+            x += (Math.random() - 0.5) * 1.6
+            y -= 0.5 + Math.random() * 0.7
+            z += (Math.random() - 0.5) * 1.6
+          }
+          pos.needsUpdate = true
+          break
+        }
+      }
+
+      // embers
+      if (embers) {
+        const pos = embers.geometry.getAttribute('position') as THREE.BufferAttribute
+        for (let i = 0; i < pos.count; i++) {
+          const e = emberState[i]
+          e.life -= dt
+          if (e.life <= 0) {
+            e.x = (Math.random() - 0.5) * 1.6
+            e.z = (Math.random() - 0.5) * 1.6
+            e.y = H - 0.2
+            e.vy = 1.5 + Math.random() * 2.5 + eruption * 3
+            e.vx = 0.4 + Math.random() * 0.8
+            e.life = 3 + Math.random() * 4
+          }
+          e.y += e.vy * dt
+          e.x += (e.vx + Math.sin(clock * 2 + i) * 0.5) * dt
+          e.z += Math.cos(clock * 1.7 + i * 0.3) * 0.5 * dt
+          e.vy *= 1 - dt * 0.25
+          pos.setXYZ(i, e.x, e.y, e.z)
+        }
+        pos.needsUpdate = true
+        const em = embers.material as THREE.PointsMaterial
+        em.color.copy(lava).lerp(new THREE.Color(1, 0.85, 0.5), 0.3)
+        em.opacity = 0.4 + m.energy * 0.6
+        em.size = 0.14 + m.treble * 0.08
+      }
+
+      // lava bombs
+      bombTimer -= dt
+      let spawn = 0
+      if (m.beat) spawn += 1 + Math.floor(m.bass * 2)
+      if (bombTimer <= 0) {
+        spawn += 1
+        bombTimer = eruption > 0.3 ? 0.14 : 2.4 + Math.random() * 2
+      }
+      for (const b of bombs) {
+        if (spawn > 0 && !b.active) {
+          spawn--
+          b.active = true
+          const ang = Math.random() * Math.PI * 2
+          const spd = 1.5 + Math.random() * 4 + eruption * 2
+          b.pos.set((Math.random() - 0.5) * 0.8, H + 0.1, (Math.random() - 0.5) * 0.8)
+          b.vel.set(Math.cos(ang) * spd, 8 + Math.random() * 6 + eruption * 5, Math.sin(ang) * spd)
+          for (let k = 0; k < TRAIL; k++) b.hist.set([b.pos.x, b.pos.y, b.pos.z], k * 3)
+          b.mesh.visible = true
+          b.trail.visible = true
+        }
+        if (!b.active) continue
+        b.vel.y -= 9.8 * dt
+        b.pos.addScaledVector(b.vel, dt)
+        const r = Math.hypot(b.pos.x, b.pos.z)
+        const ground = r < RS ? rock(Math.atan2(b.pos.z, b.pos.x), r) : 0
+        if (b.pos.y < ground) {
+          b.active = false
+          b.mesh.visible = false
+          b.trail.visible = false
+          continue
+        }
+        b.mesh.position.copy(b.pos)
+        ;(b.mesh.material as THREE.MeshBasicMaterial).color.copy(lava).multiplyScalar(1.9)
+        for (let k = TRAIL - 1; k > 0; k--) {
+          b.hist[k * 3] = b.hist[(k - 1) * 3]
+          b.hist[k * 3 + 1] = b.hist[(k - 1) * 3 + 1]
+          b.hist[k * 3 + 2] = b.hist[(k - 1) * 3 + 2]
+        }
+        b.hist.set([b.pos.x, b.pos.y, b.pos.z], 0)
+        const tp = b.trail.geometry.getAttribute('position') as THREE.BufferAttribute
+        const tc = b.trail.geometry.getAttribute('color') as THREE.BufferAttribute
+        for (let k = 0; k < TRAIL; k++) {
+          tp.setXYZ(k, b.hist[k * 3], b.hist[k * 3 + 1], b.hist[k * 3 + 2])
+          const f = Math.pow(1 - k / (TRAIL - 1), 1.5) * 1.6
+          tc.setXYZ(k, lava.r * f, lava.g * f, lava.b * f)
+        }
+        tp.needsUpdate = true
+        tc.needsUpdate = true
+      }
+
+      for (let i = 0; i < steams.length; i++) {
+        const pts = steams[i]
+        const pos = pts.geometry.getAttribute('position') as THREE.BufferAttribute
+        for (let k = 0; k < pos.count; k++) {
+          let y = pos.getY(k) + dt * (0.5 + (k % 3) * 0.2)
+          let x = pos.getX(k) + dt * 0.3
+          if (y > 4.5) {
+            y = 0
+            x -= 1.4
+          }
+          pos.setXY(k, x, y)
+        }
+        pos.needsUpdate = true
+        const sm = pts.material as THREE.PointsMaterial
+        sm.color.copy(lava).multiplyScalar(0.25).add(new THREE.Color(0.35, 0.36, 0.4))
+        sm.opacity = 0.12 + m.bass * 0.08
+      }
+
+      const shake = eruption * 0.14
+      cameraRef.position.set(
+        Math.sin(time * 0.07) * 8 + (Math.random() - 0.5) * shake,
+        6.5 + Math.sin(time * 0.11) * 0.7 + (Math.random() - 0.5) * shake,
+        40 + Math.cos(time * 0.05) * 1.5,
+      )
+      cameraRef.lookAt(0, 8.5, 0)
+    },
+    dispose(scene) {
+      if (group) {
+        scene.remove(group)
+        disposeObject(group)
+      }
+      scene.fog = new THREE.FogExp2(0x030308, 0.028)
+      scene.background = new THREE.Color(0x030308)
+      group = null
+      cameraRef = null
+      seaMat = null
+      skyMat = null
+      craterLight = null
+      embers = null
+      ashNear = null
+      ashFar = null
+      lavaMats.length = 0
+      riverLights.length = 0
+      bolts.length = 0
+      steams.length = 0
+      bombs.length = 0
+      ashState.length = 0
+      emberState.length = 0
+    },
+  }
+}
+
+export function createRainWindow(): VisualStyle {
+  let mesh: THREE.Mesh | null = null
+  let material: THREE.ShaderMaterial | null = null
+  const uA = new THREE.Color()
+  const uB = new THREE.Color()
+  const uC = new THREE.Color()
+  let flare = 0
+  let beatId = 0
+
+  return {
+    id: 'rain',
+    label: 'Rain Window',
+    hint: 'Neon city through wet glass',
+    bloom: { base: 0.3, pulse: 0.14 },
+    mount(scene, camera) {
+      camera.position.set(0, 0, 1)
+      camera.lookAt(0, 0, 0)
+      scene.fog = null
+      scene.background = new THREE.Color(0x03030a)
+      flare = 0
+      beatId = 0
+      material = new THREE.ShaderMaterial({
+        depthTest: false,
+        depthWrite: false,
+        uniforms: {
+          uTime: { value: 0 },
+          uBass: { value: 0 },
+          uMid: { value: 0 },
+          uTreble: { value: 0 },
+          uEnergy: { value: 0 },
+          uFlare: { value: 0 },
+          uBeatId: { value: 0 },
+          uRes: { value: new THREE.Vector2(1, 1) },
+          uA: { value: uA },
+          uB: { value: uB },
+          uC: { value: uC },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = vec4(position.xy, 0.0, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime, uBass, uMid, uTreble, uEnergy, uFlare, uBeatId;
+          uniform vec2 uRes;
+          uniform vec3 uA, uB, uC;
+          varying vec2 vUv;
+
+          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+          float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }
+          vec3 neon(vec3 c) {
+            float luma = dot(c, vec3(0.299, 0.587, 0.114));
+            vec3 sat = max(mix(vec3(luma), c, 2.2), vec3(0.0));
+            float l2 = dot(sat, vec3(0.299, 0.587, 0.114));
+            return sat * (0.7 / max(l2, 0.05));
+          }
+          float box(vec2 p, vec2 center, vec2 hs, float b) {
+            vec2 d = abs(p - center) - hs;
+            float m = max(d.x, d.y);
+            return 1.0 - smoothstep(-b, b, m);
+          }
+          float glowDot(vec2 p, vec2 c, float r) {
+            float d = length(p - c);
+            return exp(-d * d / (r * r));
+          }
+
+          vec3 signs(vec2 p, float b, float k) {
+            vec3 col = vec3(0.0);
+            for (int i = 0; i < 7; i++) {
+              float fi = float(i);
+              vec2 sc = vec2(-0.85 + fi * 0.27 + hash1(fi + 1.0) * 0.12, -0.16 + hash1(fi + 9.0) * 0.3);
+              vec2 sh = vec2(0.035 + hash1(fi + 2.0) * 0.07, 0.014 + hash1(fi + 5.0) * 0.03);
+              float pick = mod(fi, 3.0);
+              vec3 scol = pick < 0.5 ? neon(uA) : (pick < 1.5 ? neon(uC) : neon(uB));
+              float flick = 0.7 + 0.3 * sin(uTime * (2.0 + hash1(fi) * 6.0) + fi * 3.0);
+              flick = mix(flick, 1.0, 0.4) * (0.75 + uMid * 0.6);
+              float mine = step(abs(mod(uBeatId, 7.0) - fi), 0.5);
+              float fl = uFlare * mine;
+              float body = box(p, sc, sh, b * 1.4);
+              vec2 dd = max(abs(p - sc) - sh, 0.0);
+              float halo = exp(-length(dd) * 22.0) * 0.55;
+              // lettering bands so the sign is not a flat block
+              float letters = 0.55 + 0.45 * step(0.45, fract((p.x - sc.x) * 90.0 + hash1(fi) * 3.0));
+              letters = mix(letters, 1.0, clamp(b * 40.0, 0.0, 1.0));
+              col += scol * (body * letters * (1.1 + fl * 1.6) * flick + halo * (0.6 + fl * 1.2) * flick) * k;
+            }
+            return col;
+          }
+
+          vec3 traffic(vec2 p, float b, float k, float aspect) {
+            vec3 col = vec3(0.0);
+            float span = aspect + 0.5;
+            float r = 0.008 + b * 0.8;
+            for (int i = 0; i < 5; i++) {
+              float fi = float(i);
+              float spd = 0.09 + hash1(fi + 21.0) * 0.08;
+              float x = mod(uTime * spd + hash1(fi + 30.0) * span, span) - span * 0.5;
+              float y = -0.33 + hash1(fi + 40.0) * 0.012;
+              float hl = glowDot(p, vec2(x, y), r) + glowDot(p, vec2(x + 0.028, y), r);
+              col += vec3(1.0, 0.95, 0.85) * hl * 0.9 * k;
+              float x2 = span * 0.5 - mod(uTime * spd * 0.9 + hash1(fi + 50.0) * span, span);
+              float y2 = -0.355 + hash1(fi + 60.0) * 0.012;
+              float tl = glowDot(p, vec2(x2, y2), r * 0.9) + glowDot(p, vec2(x2 + 0.022, y2), r * 0.9);
+              col += vec3(1.0, 0.12, 0.1) * tl * 0.8 * k;
+            }
+            return col;
+          }
+
+          vec3 train(vec2 p, float b, float k, float aspect) {
+            float cyc = 41.0;
+            float phase = fract(uTime / cyc);
+            float on = step(phase, 0.26);
+            float x0 = mix(-aspect * 0.5 - 1.1, aspect * 0.5 + 0.2, phase / 0.26);
+            float len = 1.0;
+            float y = 0.07;
+            float inside = step(x0, p.x) * step(p.x, x0 + len);
+            float band = 1.0 - smoothstep(0.014, 0.014 + b * 2.0, abs(p.y - y));
+            float win = step(0.35, fract((p.x - x0) * 46.0));
+            win = mix(win, 0.8, clamp(b * 40.0, 0.0, 1.0));
+            vec3 col = vec3(1.0, 0.9, 0.7) * band * inside * win * 0.85;
+            col += vec3(0.9, 0.95, 1.0) * glowDot(p, vec2(x0 + len + 0.01, y), 0.012 + b) * 1.2;
+            // dark body silhouette over the city
+            return col * on * k;
+          }
+
+          float trainMask(vec2 p, float aspect) {
+            float cyc = 41.0;
+            float phase = fract(uTime / cyc);
+            float on = step(phase, 0.26);
+            float x0 = mix(-aspect * 0.5 - 1.1, aspect * 0.5 + 0.2, phase / 0.26);
+            float inside = step(x0, p.x) * step(p.x, x0 + 1.0);
+            return on * inside * (1.0 - smoothstep(0.024, 0.03, abs(p.y - 0.07)));
+          }
+
+          float lightning() {
+            float cyc = 19.0;
+            float cell = floor(uTime / cyc);
+            float phase = fract(uTime / cyc);
+            float h = hash1(cell + 7.0);
+            float on = step(0.4, h) * step(phase, 0.09);
+            float f = exp(-phase * 45.0) + 0.6 * exp(-abs(phase - 0.045) * 80.0);
+            return on * f;
+          }
+
+          vec3 drone(vec2 p, float b, float k) {
+            float cyc = 53.0;
+            float phase = fract(uTime / cyc);
+            float on = step(phase, 0.32);
+            vec2 pos = vec2(mix(-0.55, 0.65, phase / 0.32), 0.24 + sin(uTime * 0.7) * 0.05);
+            float blinkR = step(0.5, fract(uTime * 1.5));
+            float blinkG = step(0.5, fract(uTime * 1.5 + 0.5));
+            vec3 col = vec3(1.0, 0.1, 0.1) * glowDot(p, pos + vec2(-0.012, 0.0), 0.006 + b) * blinkR;
+            col += vec3(0.1, 1.0, 0.3) * glowDot(p, pos + vec2(0.012, 0.0), 0.006 + b) * blinkG;
+            float below = step(p.y, pos.y);
+            float spread = 0.01 + (pos.y - p.y) * 0.32;
+            float cone = (1.0 - smoothstep(spread * 0.6, spread, abs(p.x - pos.x))) * below * exp(-(pos.y - p.y) * 5.0);
+            col += vec3(0.75, 0.82, 1.0) * cone * 0.22;
+            return col * on * k;
+          }
+
+          vec3 city(vec2 p, float b, float aspect) {
+            vec3 col = mix(vec3(0.018, 0.012, 0.045), vec3(0.07, 0.03, 0.1), smoothstep(0.5, -0.15, p.y));
+            col += mix(neon(uA), neon(uC), 0.5) * 0.07 * exp(-max(p.y + 0.12, 0.0) * 6.0);
+            float flash = lightning();
+            col += vec3(0.55, 0.6, 0.85) * flash * smoothstep(-0.3, 0.4, p.y) * 0.8;
+
+            float covered = 0.0;
+            for (int layer = 0; layer < 2; layer++) {
+              float fl = float(layer);
+              float cw = layer == 0 ? 0.085 : 0.15;
+              float shift = fl * 13.7;
+              float cellId = floor(p.x / cw + shift);
+              float h = hash(vec2(cellId, fl * 7.3 + 1.0));
+              float height = layer == 0 ? -0.02 + h * 0.36 : -0.2 + h * 0.32;
+              float xin = fract(p.x / cw + shift);
+              float gap = 1.0 - smoothstep(0.93 - b * 2.0, 0.96 + b * 2.0, xin);
+              float inside = (1.0 - smoothstep(-b * 3.0, b * 3.0, p.y - height)) * gap;
+              vec3 bcol = layer == 0 ? vec3(0.035, 0.028, 0.06) : vec3(0.012, 0.01, 0.022);
+              bcol += vec3(0.2, 0.22, 0.3) * flash * 0.4;
+              vec2 wc = vec2(p.x / (cw * 0.11), (p.y - height) / 0.018);
+              vec2 wid = floor(wc);
+              vec2 wf = fract(wc);
+              float wh = hash(wid + vec2(cellId * 31.0, fl));
+              float lit = step(0.66, wh);
+              float flick = 0.75 + 0.25 * sin(uTime * (0.8 + wh * 3.0) + wh * 20.0);
+              float win = box(wf, vec2(0.5), vec2(0.24, 0.28), b * 40.0) * lit * flick;
+              vec3 wcol = mix(vec3(1.0, 0.85, 0.6), mix(uA, uC, hash(wid + 3.0)), 0.4);
+              col = mix(col, bcol, inside);
+              col += wcol * win * inside * (layer == 0 ? 0.28 : 0.5) * (0.8 + uEnergy * 0.4);
+              covered = max(covered, inside);
+            }
+
+            // elevated train silhouette + lit windows
+            float tm = trainMask(p, aspect);
+            col = mix(col, vec3(0.01, 0.01, 0.02), tm);
+            col += train(p, b, 1.0, aspect);
+
+            // street level: wet pavement reflecting the neon
+            float street = smoothstep(-0.27, -0.29, p.y);
+            vec3 pave = vec3(0.012, 0.012, 0.02);
+            vec2 mp = vec2(p.x + noise(vec2(p.x * 30.0, p.y * 40.0 + uTime * 0.5)) * 0.01, -0.58 - p.y);
+            vec3 refl = signs(mp, b * 2.5, 0.35) * (0.6 + noise(vec2(p.x * 60.0, p.y * 80.0 - uTime)) * 0.6);
+            col = mix(col, pave + refl, street);
+
+            col += signs(p, b, 1.0) * (1.0 - street);
+            col += traffic(p, b, 1.0, aspect);
+            col += drone(p, b, 1.0);
+
+            // rain falling outside
+            float streak = noise(vec2(p.x * 90.0, p.y * 3.0 + uTime * 7.0));
+            col += vec3(0.05, 0.06, 0.09) * smoothstep(0.7, 0.86, streak) * (0.4 + uEnergy * 0.8);
+            return col;
+          }
+
+          void main() {
+            float aspect = uRes.x / max(uRes.y, 1.0);
+            vec2 p = (vUv - 0.5) * vec2(aspect, 1.0);
+            float t = uTime;
+            p += vec2(sin(t * 57.0), cos(t * 49.0)) * uBass * 0.0025;
+
+            vec2 normal = vec2(0.0);
+            float dropMask = 0.0;
+            float trailMask = 0.0;
+            float spec = 0.0;
+
+            for (int l = 0; l < 2; l++) {
+              float fl = float(l);
+              float scale = 9.0 + fl * 7.0;
+              vec2 gp = p * scale + vec2(fl * 3.7, fl * 1.9);
+              vec2 id = floor(gp);
+              vec2 f = fract(gp) - 0.5;
+              float h = hash(id + fl * 11.0);
+              float exists = step(h, 0.32 + uEnergy * 0.42);
+              vec2 center = (vec2(hash(id + 1.3), hash(id + 2.7)) - 0.5) * 0.55;
+              center += vec2(sin(t * 31.0 + h * 20.0), cos(t * 27.0 + h * 9.0)) * uBass * 0.03;
+              float r = 0.11 + hash(id + 4.1) * 0.15;
+              vec2 d = f - center;
+              float dist = length(d);
+              float mask = (1.0 - smoothstep(r * 0.82, r, dist)) * exists;
+              normal += (d / r) * mask * (0.7 + fl * 0.3);
+              dropMask = max(dropMask, mask);
+              spec += (1.0 - smoothstep(0.0, r * 0.32, length(d - vec2(-r * 0.36, r * 0.36)))) * mask;
+            }
+
+            // running drops with trails
+            {
+              float cols = 15.0;
+              float cw = aspect / cols;
+              float id = floor((p.x + aspect * 0.5) / cw);
+              float hid = hash1(id + 3.0);
+              float spd = 0.14 + hash1(id + 4.0) * 0.22;
+              float cycle = t * spd + hid;
+              float yh = 0.55 - fract(cycle) * 1.15;
+              float exists = step(hash1(id + floor(cycle) * 7.0), 0.45 + uEnergy * 0.35);
+              float xc = (id + 0.5) * cw - aspect * 0.5 + sin(p.y * 9.0 + id) * 0.006 + (hash1(id + 8.0) - 0.5) * cw * 0.5;
+              vec2 d = vec2((p.x - xc) * 1.6, (p.y - yh) * 1.25);
+              float r = 0.026;
+              float head = (1.0 - smoothstep(r * 0.8, r, length(d))) * exists;
+              normal += (d / r) * head * 1.2;
+              dropMask = max(dropMask, head);
+              spec += (1.0 - smoothstep(0.0, r * 0.3, length(d - vec2(-r * 0.35, r * 0.35)))) * head;
+              float above = step(yh, p.y) * (1.0 - smoothstep(0.0, 0.4, p.y - yh));
+              float trail = above * (1.0 - smoothstep(0.004, 0.009, abs(p.x - xc))) * exists;
+              trailMask = max(trailMask, trail);
+              vec2 sd = vec2((p.x - xc) * 1.6, (fract(p.y * 34.0 + id) - 0.5) / 34.0 * 1.4);
+              float small = (1.0 - smoothstep(0.004, 0.007, length(sd))) * above * exists * step(0.4, hash1(id + floor(p.y * 34.0 + id)));
+              normal += (sd / 0.007) * small * 0.6;
+              dropMask = max(dropMask, small);
+            }
+
+            float clear = clamp(dropMask + trailMask, 0.0, 1.0);
+            float blur = mix(0.022, 0.0035, clear);
+            vec2 refr = normal * 0.055 * dropMask;
+            vec3 col = city(p + refr, blur, aspect);
+            col += vec3(0.9, 0.95, 1.0) * spec * 0.4;
+            // fogged glass tint where no drops have cleared it
+            col = mix(col * 0.8 + vec3(0.012, 0.014, 0.025), col, 0.55 + clear * 0.45);
+            col *= smoothstep(0.85, 0.3, length(p * vec2(0.65, 1.0)));
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material)
+      mesh.frustumCulled = false
+      mesh.renderOrder = 10
+      scene.add(mesh)
+      material.uniforms.uRes.value.set(window.innerWidth, window.innerHeight)
+    },
+    update(m, time, dt, palette) {
+      if (!material) return
+      flare = Math.max(flare * Math.exp(-dt * 4), m.beat ? 1 : 0)
+      if (m.beat) beatId++
+      material.uniforms.uTime.value = time
+      material.uniforms.uBass.value = m.bass
+      material.uniforms.uMid.value = m.mid
+      material.uniforms.uTreble.value = m.treble
+      material.uniforms.uEnergy.value = m.energy
+      material.uniforms.uFlare.value = flare
+      material.uniforms.uBeatId.value = beatId
+      colorFrom(palette.a, material.uniforms.uA.value)
+      colorFrom(palette.b, material.uniforms.uB.value)
+      colorFrom(palette.c, material.uniforms.uC.value)
+    },
+    resize(w, h) {
+      if (material) material.uniforms.uRes.value.set(w, h)
+    },
+    dispose(scene) {
+      if (mesh) {
+        scene.remove(mesh)
+        disposeObject(mesh)
+      }
+      scene.background = new THREE.Color(0x030308)
+      mesh = null
+      material = null
+    },
+  }
+}
+
 export const STYLE_CATALOG = [
   { id: 'nebula', label: 'Nebula', hint: 'Spiral dust and embers' },
   { id: 'dusk', label: 'Dusk', hint: 'Fixed city orbit' },
@@ -3848,6 +5300,9 @@ export const STYLE_CATALOG = [
   { id: 'hive', label: 'Hive', hint: 'Honeycomb and bees' },
   { id: 'void', label: 'Void', hint: 'Black hole in deep space' },
   { id: 'tide', label: 'Tide', hint: 'Neon tide with leaping fish' },
+  { id: 'abyss', label: 'Abyss', hint: 'Deep-sea jellyfish swarm' },
+  { id: 'caldera', label: 'Caldera', hint: 'Erupting volcano at night' },
+  { id: 'rain', label: 'Rain Window', hint: 'Neon city through wet glass' },
 ] as const
 
 export const STYLE_FACTORIES = [
@@ -3861,6 +5316,9 @@ export const STYLE_FACTORIES = [
   createHive,
   createVoid,
   createTide,
+  createAbyss,
+  createCaldera,
+  createRainWindow,
 ]
 
 export function createAllStyles(): VisualStyle[] {
