@@ -4496,10 +4496,12 @@ export function createCaldera(): VisualStyle {
   const bolt = new THREE.Color(0x9ad0ff)
   const emberTint = new THREE.Color(1, 0.85, 0.5)
   const steamBase = new THREE.Color(0.35, 0.36, 0.4)
+  const whiteC = new THREE.Color(1, 1, 1)
   const scratch = new THREE.Color()
   const tmpV = new THREE.Vector3()
   const upZ = new THREE.Vector3(0, 0, 1)
   const rockUniforms = { uTime: { value: 0 }, uHot: { value: 0 }, uLava: { value: lava } }
+  let skyFlash = 0
   type Volcano = { group: THREE.Group; update: (m: AudioMetrics, time: number, dt: number, sens: number) => number }
   const volcanoes: Volcano[] = []
   const TRAIL = 12
@@ -4888,6 +4890,45 @@ export function createCaldera(): VisualStyle {
     craterLight.position.set(0, H + 1.5, 0)
     g.add(craterLight)
 
+    // pressure-wave rings: fired on eruption onset and on heavy beats
+    type Ring = { mesh: THREE.Mesh; age: number; life: number; reach: number; active: boolean }
+    const rings: Ring[] = []
+    const ringGeo = new THREE.RingGeometry(0.86, 1, 96)
+    for (let i = 0; i < 3; i++) {
+      const mesh = new THREE.Mesh(
+        ringGeo,
+        new THREE.MeshBasicMaterial({ color: lava, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+      )
+      mesh.rotation.x = -Math.PI / 2
+      mesh.position.y = H + 0.7
+      mesh.frustumCulled = false
+      rings.push({ mesh, age: 0, life: 1, reach: 20, active: false })
+      g.add(mesh)
+    }
+    const fireRing = (reach: number, life: number) => {
+      const r = rings.find((rr) => !rr.active)
+      if (!r) return
+      r.active = true
+      r.age = 0
+      r.life = life
+      r.reach = reach
+    }
+
+    // long volcanic lightning: forks from the top of the ash cloud down to the crater
+    const skyBolts: { line: THREE.Line; life: number }[] = []
+    for (let i = 0; i < (opts.main ? 2 : 1); i++) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(22 * 3), 3))
+      const line = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
+      )
+      line.frustumCulled = false
+      skyBolts.push({ line, life: 0 })
+      g.add(line)
+    }
+    let skyCooldown = 4 + rng.next() * 4
+
     let eruptionTimer = opts.main ? 22 : 30 + rng.next() * 50
     let eruptionAge = -1
     let eruption = 0
@@ -4896,20 +4937,20 @@ export function createCaldera(): VisualStyle {
     let craterFlash = 0
     let localClock = 0
 
-    const fireSplash = (x: number, y: number, z: number, watery: boolean, launch: boolean) => {
+    const fireSplash = (x: number, y: number, z: number, watery: boolean, launch: boolean, power = 1) => {
       const s = splashes.find((sp) => !sp.active)
       if (!s) return
       s.active = true
       s.watery = watery
       s.age = 0
-      s.life = watery ? 1.4 : launch ? 0.9 : 1.1
+      s.life = watery ? 1.4 : launch ? 0.9 + power * 0.25 : 1.1
       const pos = s.points.geometry.getAttribute('position') as THREE.BufferAttribute
       for (let i = 0; i < SPARKS; i++) {
         const ang = Math.random() * Math.PI * 2
-        const spd = watery ? 0.6 + Math.random() * 1.4 : 1.5 + Math.random() * 3.5
+        const spd = (watery ? 0.6 + Math.random() * 1.4 : 1.5 + Math.random() * 3.5) * power
         pos.setXYZ(i, x, y, z)
         s.vel[i * 3] = Math.cos(ang) * spd * (launch ? 0.6 : 1)
-        s.vel[i * 3 + 1] = watery ? 1.2 + Math.random() * 2 : (launch ? 4 : 1.5) + Math.random() * 4.5
+        s.vel[i * 3 + 1] = watery ? 1.2 + Math.random() * 2 : ((launch ? 4 : 1.5) + Math.random() * 4.5) * power
         s.vel[i * 3 + 2] = Math.sin(ang) * spd * (launch ? 0.6 : 1)
       }
       pos.needsUpdate = true
@@ -4932,7 +4973,14 @@ export function createCaldera(): VisualStyle {
       // eruption schedule
       if (eruptionAge < 0) {
         eruptionTimer -= dt * (0.7 + sens * 0.3)
-        if (eruptionTimer <= 0) eruptionAge = 0
+        if (eruptionTimer <= 0) {
+          // onset: blinding crater flash, pressure ring racing outward, sky lit up
+          eruptionAge = 0
+          craterFlash = 1.4
+          fireRing(30, 1.9)
+          fireSplash(0, H - 0.4, 0, false, true, 2.2)
+          skyFlash = Math.max(skyFlash, 1.2)
+        }
         eruption = Math.max(0, eruption - dt * 0.5)
       } else {
         eruptionAge += dt
@@ -5051,7 +5099,66 @@ export function createCaldera(): VisualStyle {
       }
       if (spawn > 0) {
         craterFlash = Math.min(1.4, craterFlash + 0.3 * spawn)
-        fireSplash(0, H - 0.6, 0, false, true)
+        // beats fire a lava fountain whose height follows the bass; heavy hits ring the crater
+        const power = m.beat ? 1 + m.bass * 1.6 * sens + eruption * 0.5 : 1
+        fireSplash(0, H - 0.6, 0, false, true, power)
+        if (m.beat && m.bass > 0.5) {
+          fireSplash(0, H - 0.4, 0, false, true, power * 1.2)
+          fireRing(12 + m.bass * 14, 0.9)
+        }
+      }
+
+      // pressure rings
+      for (const r of rings) {
+        if (!r.active) continue
+        r.age += dt
+        const k = r.age / r.life
+        const mat = r.mesh.material as THREE.MeshBasicMaterial
+        if (k >= 1) {
+          r.active = false
+          mat.opacity = 0
+          r.mesh.scale.setScalar(0.01)
+          continue
+        }
+        r.mesh.scale.setScalar(0.6 + Math.pow(k, 0.55) * r.reach)
+        mat.color.copy(lava).lerp(whiteC, 0.35).multiplyScalar(1.6)
+        mat.opacity = (1 - k) * (1 - k) * 0.75
+      }
+
+      // sky lightning
+      skyCooldown -= dt
+      for (const b of skyBolts) {
+        const mat = b.line.material as THREE.LineBasicMaterial
+        if (b.life > 0) {
+          b.life -= dt
+          mat.opacity = Math.max(0, b.life / 0.32) * (0.65 + Math.random() * 0.35)
+          mat.color.copy(bolt).lerp(whiteC, 0.5)
+        } else if (skyCooldown <= 0 && (Math.random() < dt * (eruption * 1.6 + 0.015) || (m.beat && m.treble > 0.5 && Math.random() < 0.4))) {
+          skyCooldown = Math.max(0.4, 1.4 + Math.random() * 3.5 - eruption * 1.2)
+          b.life = 0.32
+          skyFlash = Math.max(skyFlash, 0.7 + eruption * 0.5)
+          craterFlash = Math.min(1.4, craterFlash + 0.45)
+          const pos = b.line.geometry.getAttribute('position') as THREE.BufferAttribute
+          const n = pos.count
+          const x0 = (Math.random() - 0.5) * 12 + 4
+          const z0 = (Math.random() - 0.5) * 12
+          const y0 = H + 15 + Math.random() * 10
+          const x1 = (Math.random() - 0.5) * 3
+          const z1 = (Math.random() - 0.5) * 3
+          let jx = 0
+          let jz = 0
+          for (let k = 0; k < n; k++) {
+            const s = k / (n - 1)
+            jx += (Math.random() - 0.5) * 2.6
+            jz += (Math.random() - 0.5) * 2.6
+            const w = Math.sin(s * Math.PI) * 0.55
+            pos.setXYZ(k, x0 + (x1 - x0) * s + jx * w, y0 + (H + 0.3 - y0) * s, z0 + (z1 - z0) * s + jz * w)
+          }
+          pos.needsUpdate = true
+          break
+        } else {
+          mat.opacity = 0
+        }
       }
       for (const b of bombs) {
         if (spawn > 0 && !b.active) {
@@ -5060,7 +5167,7 @@ export function createCaldera(): VisualStyle {
           const ang = Math.random() * Math.PI * 2
           const spd = 1.5 + Math.random() * 4 + eruption * 2
           b.pos.set((Math.random() - 0.5) * 0.8, H + 0.1, (Math.random() - 0.5) * 0.8)
-          b.vel.set(Math.cos(ang) * spd, 8 + Math.random() * 6 + eruption * 5, Math.sin(ang) * spd)
+          b.vel.set(Math.cos(ang) * spd, 8 + Math.random() * 6 + eruption * 5 + (m.beat ? m.bass * 5 : 0), Math.sin(ang) * spd)
           for (let k = 0; k < TRAIL; k++) b.hist.set([b.pos.x, b.pos.y, b.pos.z], k * 3)
         }
         if (!b.active) continue
@@ -5196,7 +5303,7 @@ export function createCaldera(): VisualStyle {
       skyMat = new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
-        uniforms: { uLava: { value: lava }, uGlow: { value: 0 }, uCamDir: { value: new THREE.Vector2(0, 1) } },
+        uniforms: { uLava: { value: lava }, uGlow: { value: 0 }, uFlash: { value: 0 }, uCamDir: { value: new THREE.Vector2(0, 1) } },
         vertexShader: `
           varying vec3 vDir;
           void main() {
@@ -5206,7 +5313,7 @@ export function createCaldera(): VisualStyle {
         `,
         fragmentShader: `
           uniform vec3 uLava;
-          uniform float uGlow;
+          uniform float uGlow, uFlash;
           uniform vec2 uCamDir;
           varying vec3 vDir;
           void main() {
@@ -5219,6 +5326,8 @@ export function createCaldera(): VisualStyle {
             float glow = exp(-pow(side * 2.6, 2.0)) * exp(-max(d.y, 0.0) * 6.0) * smoothstep(0.1, -0.3, along);
             col += uLava * glow * (0.12 + uGlow * 0.25);
             col += uLava * exp(-max(d.y, 0.0) * 9.0) * 0.03;
+            // volcanic lightning lights the whole cloud deck for a frame or two
+            col += mix(vec3(0.55, 0.65, 1.0), uLava, 0.35) * uFlash * 0.2 * (0.35 + 0.65 * exp(-max(d.y, 0.0) * 2.5));
             gl_FragColor = vec4(col, 1.0);
           }
         `,
@@ -5262,6 +5371,7 @@ export function createCaldera(): VisualStyle {
         uniforms: {
           uTime: { value: 0 },
           uGlow: { value: 0 },
+          uFlash: { value: 0 },
           uLava: { value: lava },
           uCam: { value: new THREE.Vector2(0, 1) },
           uVolc: { value: layout.map((l) => new THREE.Vector3(l.x, l.z, l.scale)) },
@@ -5275,7 +5385,7 @@ export function createCaldera(): VisualStyle {
           }
         `,
         fragmentShader: `
-          uniform float uTime, uGlow;
+          uniform float uTime, uGlow, uFlash;
           uniform vec3 uLava;
           uniform vec2 uCam;
           uniform vec3 uVolc[${layout.length}];
@@ -5299,6 +5409,7 @@ export function createCaldera(): VisualStyle {
             float sparkle = smoothstep(0.62, 0.9, streak);
             vec3 col = water + uLava * (islandGlow * 0.035 + craterRefl * (0.06 + uGlow * 0.14)) * (0.3 + streak * 0.7 + sparkle * 1.5);
             col *= smoothstep(220.0, 60.0, r) * 0.85 + 0.15;
+            col += vec3(0.45, 0.55, 0.9) * uFlash * 0.045 * (0.4 + streak + sparkle);
             gl_FragColor = vec4(col, 1.0);
           }
         `,
@@ -5334,6 +5445,7 @@ export function createCaldera(): VisualStyle {
       bolt.setRGB(...palette.c).lerp(scratch.setRGB(1, 1, 1), 0.4)
       lift(bolt, 0.9)
 
+      skyFlash = Math.max(0, skyFlash - dt * 3.2)
       let maxEruption = 0
       for (const v of volcanoes) maxEruption = Math.max(maxEruption, v.update(m, time, dt, sens))
 
@@ -5362,10 +5474,12 @@ export function createCaldera(): VisualStyle {
       if (seaMat) {
         seaMat.uniforms.uTime.value = time
         seaMat.uniforms.uGlow.value = m.bass * 0.8 + maxEruption
+        seaMat.uniforms.uFlash.value = skyFlash
         seaMat.uniforms.uCam.value.set(cx / cl, cz / cl)
       }
       if (skyMat) {
         skyMat.uniforms.uGlow.value = m.energy + maxEruption * 1.5
+        skyMat.uniforms.uFlash.value = skyFlash
         skyMat.uniforms.uCamDir.value.set(cx / cl, cz / cl)
       }
     },
@@ -5559,11 +5673,52 @@ export function createRainWindow(): VisualStyle {
             return col * on * k;
           }
 
+          // rotating searchlights sweeping the clouds from street level, swing speed follows the mids
+          vec3 beams(vec2 p) {
+            vec3 col = vec3(0.0);
+            for (int i = 0; i < 2; i++) {
+              float fi = float(i);
+              vec2 o = vec2(-0.32 + fi * 0.7, -0.22);
+              float ang = 1.5708 + sin(uTime * (0.22 + uMid * 0.25) + fi * 2.4) * 0.75;
+              vec2 dir = vec2(cos(ang), sin(ang));
+              vec2 rel = p - o;
+              float along = dot(rel, dir);
+              float perp = dot(rel, vec2(-dir.y, dir.x));
+              float width = 0.012 + along * 0.09;
+              float beam = exp(-perp * perp / (width * width)) * step(0.0, along) * exp(-along * 1.4);
+              vec3 bc = i == 0 ? neon(uB) : neon(uA);
+              col += mix(vec3(0.75, 0.8, 1.0), bc, 0.35) * beam * (0.24 + uMid * 0.28 + uFlare * 0.1);
+            }
+            return col * smoothstep(-0.32, -0.05, p.y);
+          }
+
+          // giant animated billboard: scrolling colour bands that slam to white on beats
+          vec3 billboard(vec2 p, float b) {
+            vec2 c = vec2(0.5, 0.37);
+            vec2 hs = vec2(0.15, 0.062);
+            float body = box(p, c, hs, b * 1.2);
+            vec2 q = (p - c) / hs;
+            float bands = 0.5 + 0.5 * sin(q.x * 9.0 - uTime * 2.4 + sin(q.y * 3.0 + uTime) * 0.8);
+            bands = smoothstep(0.3, 0.7, bands);
+            float cyc = 0.5 + 0.5 * sin(uTime * 0.35);
+            vec3 ca = mix(neon(uA), neon(uC), cyc);
+            vec3 cb = mix(neon(uC), neon(uB), cyc);
+            vec3 pic = mix(ca, cb, bands) * (0.55 + uBass * 0.9);
+            // frame + logo dot
+            float frame = box(p, c, hs + 0.006, b) - body;
+            pic += vec3(1.0) * uFlare * 0.9 * step(abs(mod(uBeatId, 3.0)), 0.5);
+            pic += vec3(1.0, 0.95, 0.9) * glowDot(p, c + vec2(-0.1, 0.0), 0.02 + b) * (0.6 + uTreble);
+            vec2 dd = max(abs(p - c) - hs, 0.0);
+            float halo = exp(-length(dd) * 16.0) * 0.5;
+            return pic * body * 1.1 + mix(ca, cb, 0.5) * halo * (0.5 + uBass * 0.6) + vec3(0.02) * clamp(frame, 0.0, 1.0);
+          }
+
           vec3 city(vec2 p, float b, float aspect) {
             vec3 col = mix(vec3(0.018, 0.012, 0.045), vec3(0.07, 0.03, 0.1), smoothstep(0.5, -0.15, p.y));
             col += mix(neon(uA), neon(uC), 0.5) * 0.07 * exp(-max(p.y + 0.12, 0.0) * 6.0);
             float flash = lightning();
             col += vec3(0.55, 0.6, 0.85) * flash * smoothstep(-0.3, 0.4, p.y) * 0.8;
+            col += beams(p);
 
             float covered = 0.0;
             for (int layer = 0; layer < 2; layer++) {
@@ -5613,12 +5768,15 @@ export function createRainWindow(): VisualStyle {
             col = mix(col, pave + refl, street);
 
             col += signs(p, b, 1.0) * (1.0 - street);
+            col += billboard(p, b) * (1.0 - street);
             col += traffic(p, b, 1.0, aspect);
             col += drone(p, b, 1.0);
 
-            // rain falling outside
+            // rain falling outside (two layers: far drizzle and near heavier streaks)
             float streak = noise(vec2(p.x * 90.0, p.y * 3.0 + uTime * 7.0));
             col += vec3(0.05, 0.06, 0.09) * smoothstep(0.7, 0.86, streak) * (0.4 + uEnergy * 0.8);
+            float streak2 = noise(vec2(p.x * 160.0 + 40.0, p.y * 2.2 + uTime * 11.0));
+            col += mix(vec3(0.06, 0.07, 0.1), neon(uA) * 0.08, 0.3) * smoothstep(0.76, 0.9, streak2) * (0.3 + uEnergy * 1.0);
             return col;
           }
 
@@ -5631,6 +5789,8 @@ export function createRainWindow(): VisualStyle {
             float dropMask = 0.0;
             float trailMask = 0.0;
             float spec = 0.0;
+            float rim = 0.0;
+            vec2 rimDir = vec2(0.0);
 
             for (int l = 0; l < 2; l++) {
               float fl = float(l);
@@ -5639,7 +5799,8 @@ export function createRainWindow(): VisualStyle {
               vec2 id = floor(gp);
               vec2 f = fract(gp) - 0.5;
               float h = hash(id + fl * 11.0);
-              float exists = step(h, 0.32 + uEnergy * 0.42);
+              // stationary drops are a fixed set - they never pop in or out with the music
+              float exists = step(h, 0.5);
               vec2 center = (vec2(hash(id + 1.3), hash(id + 2.7)) - 0.5) * 0.55;
               float r = 0.11 + hash(id + 4.1) * 0.15;
               vec2 d = f - center;
@@ -5647,6 +5808,8 @@ export function createRainWindow(): VisualStyle {
               float mask = (1.0 - smoothstep(r * 0.82, r, dist)) * exists;
               normal += (d / r) * mask * (0.7 + fl * 0.3);
               dropMask = max(dropMask, mask);
+              rim += smoothstep(r * 0.55, r * 0.92, dist) * mask;
+              rimDir += (d / r) * smoothstep(r * 0.55, r * 0.92, dist) * mask;
               spec += (1.0 - smoothstep(0.0, r * 0.32, length(d - vec2(-r * 0.36, r * 0.36)))) * mask;
             }
 
@@ -5659,13 +5822,17 @@ export function createRainWindow(): VisualStyle {
               float spd = 0.14 + hash1(id + 4.0) * 0.22;
               float cycle = t * spd + hid;
               float yh = 0.55 - fract(cycle) * 1.15;
-              float exists = step(hash1(id + floor(cycle) * 7.0), 0.45 + uEnergy * 0.35);
+              // which columns run is decided once per cycle (no music dependence), and the drop
+              // fades out as it runs off the bottom edge instead of vanishing on reset
+              float exists = step(hash1(id + floor(cycle) * 7.0), 0.7) * smoothstep(1.0, 0.86, fract(cycle));
               float xc = (id + 0.5) * cw - aspect * 0.5 + sin(p.y * 9.0 + id) * 0.006 + (hash1(id + 8.0) - 0.5) * cw * 0.5;
               vec2 d = vec2((p.x - xc) * 1.6, (p.y - yh) * 1.25);
               float r = 0.026;
               float head = (1.0 - smoothstep(r * 0.8, r, length(d))) * exists;
               normal += (d / r) * head * 1.2;
               dropMask = max(dropMask, head);
+              rim += smoothstep(r * 0.5, r * 0.9, length(d)) * head;
+              rimDir += (d / r) * smoothstep(r * 0.5, r * 0.9, length(d)) * head;
               spec += (1.0 - smoothstep(0.0, r * 0.3, length(d - vec2(-r * 0.35, r * 0.35)))) * head;
               float above = step(yh, p.y) * (1.0 - smoothstep(0.0, 0.4, p.y - yh));
               float trail = above * (1.0 - smoothstep(0.004, 0.009, abs(p.x - xc))) * exists;
@@ -5681,6 +5848,14 @@ export function createRainWindow(): VisualStyle {
             vec2 refr = normal * 0.055 * dropMask;
             vec3 col = city(p + refr, blur, aspect);
             col += vec3(0.9, 0.95, 1.0) * spec * 0.4;
+            // neon refraction fringe: drop edges split the city light into palette colours
+            {
+              float ang = atan(rimDir.y, rimDir.x + 0.0001);
+              float sel = 0.5 + 0.5 * sin(ang * 2.0 + uTime * 0.4);
+              vec3 fringe = mix(neon(uA), neon(uC), sel);
+              fringe = mix(fringe, neon(uB), 0.5 + 0.5 * sin(ang * 3.0 - uTime * 0.3));
+              col += fringe * clamp(rim, 0.0, 1.0) * (0.09 + uEnergy * 0.14 + uFlare * 0.1);
+            }
             // fogged glass tint where no drops have cleared it
             col = mix(col * 0.8 + vec3(0.012, 0.014, 0.025), col, 0.55 + clear * 0.45);
             col *= smoothstep(0.85, 0.3, length(p * vec2(0.65, 1.0)));
