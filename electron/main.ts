@@ -57,6 +57,22 @@ function createWindow() {
     },
   })
 
+  // The shell window only ever hosts the bundled renderer; refuse popups and
+  // navigations away from it so a compromised page cannot escape the sandbox.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const distUrl = `file://${RENDERER_DIST.replace(/\\/g, '/').replace(/^\/?/, '/')}`
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    let allowed = false
+    try {
+      allowed = VITE_DEV_SERVER_URL
+        ? new URL(url).origin === new URL(VITE_DEV_SERVER_URL).origin
+        : decodeURIComponent(url).startsWith(distUrl)
+    } catch {
+      allowed = false
+    }
+    if (!allowed) event.preventDefault()
+  })
+
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     console.error('Renderer failed to load', code, desc)
     mainWindow?.show()
@@ -70,8 +86,12 @@ function createWindow() {
     browserWebContentsId = contents.id
     contents.setBackgroundThrottling(false)
     contents.setWindowOpenHandler(({ url }) => {
-      contents.loadURL(url)
+      // Keep popups inside the embedded browser and only follow web URLs.
+      if (/^https?:\/\//i.test(url)) contents.loadURL(url)
       return { action: 'deny' }
+    })
+    contents.on('will-navigate', (event, url) => {
+      if (!/^(https?|about):/i.test(url)) event.preventDefault()
     })
   })
 

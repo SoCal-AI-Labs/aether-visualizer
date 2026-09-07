@@ -181,13 +181,11 @@ export function createNebula(): VisualStyle {
   let dust: THREE.Points | null = null
   let sparks: THREE.Points | null = null
   let stars: THREE.Points | null = null
-  let meteors: THREE.LineSegments | null = null
   let armMat: THREE.ShaderMaterial | null = null
   let starMat: THREE.ShaderMaterial | null = null
   const colorA = new THREE.Color()
   const colorB = new THREE.Color()
   const colorC = new THREE.Color()
-  const meteorSeeds: { a: number; b: number; speed: number; delay: number }[] = []
 
   const particleMat = (
     size: number,
@@ -222,10 +220,10 @@ export function createNebula(): VisualStyle {
           p.x = cos(spin + twist) * radius;
           p.z = sin(spin + twist) * radius;
           p.y += sin(t * 1.6 + aSeed * 14.0) * (0.12 + uEnergy * 0.55);
-          vGlow = 0.16 + uEnergy * 0.28 + aSeed * 0.12;
+          vGlow = 0.52 + uEnergy * 0.6 + uBass * 0.3 + aSeed * 0.28;
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mv;
-          gl_PointSize = (uSize + uBass * 2.4 + aSeed * 1.8) * (6.2 / max(1.3, -mv.z));
+          gl_PointSize = (uSize + uBass * 3.2 + aSeed * 2.4) * (7.4 / max(1.3, -mv.z));
         }
       `,
       fragmentShader: glow,
@@ -235,6 +233,7 @@ export function createNebula(): VisualStyle {
     id: 'nebula',
     label: 'Nebula',
     hint: 'Spiral dust and embers',
+    bloom: { base: 0.42, pulse: 0.24 },
     mount(scene, camera, palette) {
       camera.position.set(0, 1.4, 10)
       camera.lookAt(0, 0, 0)
@@ -259,7 +258,7 @@ export function createNebula(): VisualStyle {
         return geo
       }
       armMat = particleMat(
-        1.35,
+        1.9,
         `
           uniform vec3 uA, uB, uC;
           varying float vSeed, vGlow;
@@ -267,19 +266,20 @@ export function createNebula(): VisualStyle {
             vec2 uv = gl_PointCoord - 0.5;
             float d = length(uv);
             if (d > 0.5) discard;
-            float core = smoothstep(0.5, 0.08, d);
+            float core = smoothstep(0.5, 0.05, d);
+            float hot = smoothstep(0.18, 0.0, d);
             vec3 col = mix(uA, uB, vSeed);
             col = mix(col, uC, smoothstep(0.72, 1.0, vSeed));
-            col = min(col, vec3(0.85));
-            gl_FragColor = vec4(col * vGlow, core * 0.7);
+            col += hot * 0.35;
+            gl_FragColor = vec4(col * vGlow, core * 0.95);
           }
         `,
       )
-      arms = new THREE.Points(makeCloud(9000, 7.2, 1.6), armMat)
+      arms = new THREE.Points(makeCloud(11000, 7.2, 1.6), armMat)
       dust = new THREE.Points(
-        makeCloud(5000, 8.8, 2.4),
+        makeCloud(6000, 8.8, 2.4),
         particleMat(
-          0.7,
+          1.1,
           `
             uniform vec3 uA, uB, uC;
             varying float vSeed, vGlow;
@@ -288,15 +288,15 @@ export function createNebula(): VisualStyle {
               float d = length(uv);
               if (d > 0.5) discard;
               vec3 col = mix(uB, uC, vSeed);
-              gl_FragColor = vec4(col * vGlow * 0.55, smoothstep(0.5, 0.0, d) * 0.35);
+              gl_FragColor = vec4(col * vGlow * 0.9, smoothstep(0.5, 0.0, d) * 0.6);
             }
           `,
         ),
       )
       sparks = new THREE.Points(
-        makeCloud(700, 6.4, 2.8),
+        makeCloud(900, 6.4, 2.8),
         particleMat(
-          2.1,
+          2.8,
           `
             uniform vec3 uA, uB, uC;
             varying float vSeed, vGlow;
@@ -306,7 +306,8 @@ export function createNebula(): VisualStyle {
               if (d > 0.5) discard;
               float spike = pow(max(0.0, 1.0 - abs(uv.x) * 8.0), 2.0) + pow(max(0.0, 1.0 - abs(uv.y) * 8.0), 2.0);
               vec3 col = mix(uC, uA, vSeed);
-              gl_FragColor = vec4(col * (0.4 + vGlow), (smoothstep(0.45, 0.0, d) + spike * 0.35) * 0.8);
+              col += smoothstep(0.12, 0.0, d) * 0.6;
+              gl_FragColor = vec4(col * (0.8 + vGlow * 1.2), (smoothstep(0.45, 0.0, d) + spike * 0.45) * 0.95);
             }
           `,
         ),
@@ -362,30 +363,7 @@ export function createNebula(): VisualStyle {
       })
       stars = new THREE.Points(starGeo, starMat)
 
-      const meteorCount = 5
-      const meteorPos = new Float32Array(meteorCount * 6)
-      for (let i = 0; i < meteorCount; i++) {
-        meteorSeeds.push({
-          a: rng.next() * Math.PI * 2,
-          b: (rng.next() - 0.5) * 1.4,
-          speed: 0.18 + rng.next() * 0.22,
-          delay: rng.next() * 8,
-        })
-      }
-      const meteorGeo = new THREE.BufferGeometry()
-      meteorGeo.setAttribute('position', new THREE.BufferAttribute(meteorPos, 3))
-      meteors = new THREE.LineSegments(
-        meteorGeo,
-        new THREE.LineBasicMaterial({
-          color: 0xffffff,
-          transparent: true,
-          opacity: 0.55,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      )
-
-      group.add(stars, arms, dust, sparks, meteors)
+      group.add(stars, arms, dust, sparks)
       scene.add(group)
     },
     update(m, time, _dt, palette) {
@@ -401,26 +379,6 @@ export function createNebula(): VisualStyle {
         if (mat.uniforms.uEnergy) mat.uniforms.uEnergy.value = m.energy
       })
       if (starMat) starMat.uniforms.uTime.value = time
-      if (meteors) {
-        const pos = meteors.geometry.getAttribute('position') as THREE.BufferAttribute
-        const mat = meteors.material as THREE.LineBasicMaterial
-        mat.color.setRGB(palette.c[0] * 0.4 + 0.7, palette.c[1] * 0.3 + 0.75, palette.c[2] * 0.2 + 0.85)
-        mat.opacity = 0.25 + m.energy * 0.35
-        for (let i = 0; i < meteorSeeds.length; i++) {
-          const s = meteorSeeds[i]
-          const life = ((time * s.speed + s.delay) % 6.5) / 6.5
-          const r = 9.5 - life * 11
-          const a = s.a + life * 0.35
-          const x = Math.cos(a) * r
-          const y = s.b + life * 0.4
-          const z = Math.sin(a) * r
-          const x2 = Math.cos(a + 0.04) * (r + 0.85)
-          const z2 = Math.sin(a + 0.04) * (r + 0.85)
-          pos.setXYZ(i * 2, x, y, z)
-          pos.setXYZ(i * 2 + 1, x2, y + 0.08, z2)
-        }
-        pos.needsUpdate = true
-      }
       group.rotation.y = time * 0.035
       group.rotation.x = 0.28 + Math.sin(time * 0.07) * 0.08
       if (stars) stars.rotation.y = -group.rotation.y * 0.85
@@ -435,10 +393,8 @@ export function createNebula(): VisualStyle {
       dust = null
       sparks = null
       stars = null
-      meteors = null
       armMat = null
       starMat = null
-      meteorSeeds.length = 0
     },
   }
 }
@@ -642,12 +598,13 @@ export function createWarp(): VisualStyle {
   const uA = new THREE.Color()
   const uB = new THREE.Color()
   const uC = new THREE.Color()
+  let flare = 0
 
   return {
     id: 'warp',
     label: 'Warp',
     hint: 'Through the wormhole',
-    bloom: { base: 0.34, pulse: 0.06 },
+    bloom: { base: 0.32, pulse: 0.12 },
     mount(scene, camera) {
       camera.position.set(0, 0, 1)
       camera.lookAt(0, 0, 0)
@@ -664,6 +621,7 @@ export function createWarp(): VisualStyle {
           uTreble: { value: 0 },
           uEnergy: { value: 0 },
           uMode: { value: 0 },
+          uFlare: { value: 0 },
           uRes: { value: new THREE.Vector2(1, 1) },
           uA: { value: uA },
           uB: { value: uB },
@@ -677,7 +635,7 @@ export function createWarp(): VisualStyle {
           }
         `,
         fragmentShader: `
-          uniform float uTime, uSpeed, uBass, uMid, uTreble, uEnergy, uMode;
+          uniform float uTime, uSpeed, uBass, uMid, uTreble, uEnergy, uMode, uFlare;
           uniform vec2 uRes;
           uniform vec3 uA, uB, uC;
           varying vec2 vUv;
@@ -713,6 +671,13 @@ export function createWarp(): VisualStyle {
             return c * (0.58 / max(luma, 0.05));
           }
 
+          vec3 neon(vec3 c) {
+            float luma = dot(c, vec3(0.299, 0.587, 0.114));
+            vec3 sat = max(mix(vec3(luma), c, 2.4), vec3(0.0));
+            float l2 = dot(sat, vec3(0.299, 0.587, 0.114));
+            return sat * (0.62 / max(l2, 0.05));
+          }
+
           void main() {
             vec2 uv = (vUv - 0.5) * vec2(uRes.x / max(uRes.y, 1.0), 1.0);
             float spin = uTime * (0.14 + uSpeed * 0.32);
@@ -731,6 +696,8 @@ export function createWarp(): VisualStyle {
             vec3 ca = tone(uA);
             vec3 cb = tone(uB);
             vec3 cc = tone(uC);
+            vec3 na = neon(uA);
+            vec3 nc = neon(uC);
 
             float n = fbm(vec2(spiral * 0.82, depth * 2.2));
             float n2 = fbm(vec2(spiral * 1.55 + 4.0, depth * 3.0));
@@ -741,15 +708,36 @@ export function createWarp(): VisualStyle {
             wall = mix(wall, cc, n2 * 0.42);
             wall *= 0.3 + arms * 0.72 + arms2 * 0.22;
             float wallFade = smoothstep(0.012, 0.08, lr) * exp(-lr * 0.45);
-            wall *= wallFade * (0.88 + uEnergy * 0.16);
+            wall *= wallFade * (0.5 + uEnergy * 0.22);
 
             float core = exp(-lr * 16.0);
             float throat = exp(-lr * 6.4) * 0.16;
             vec3 exitCol = mix(cc, vec3(0.72, 0.8, 0.9), 0.22);
             float fringe = exp(-abs(lr - 0.09) * 14.0);
-            vec3 chroma = vec3(ca.r, cb.g, cc.b) * fringe * 0.42;
+            vec3 chroma = vec3(ca.r, cb.g, cc.b) * fringe * (0.42 + uFlare * 0.5);
+
+            // neon energy rings rushing toward the viewer
+            float travel = uTime * (0.4 + uSpeed * 0.6);
+            float ringPos = depth * 1.7 - travel;
+            float ringF = fract(ringPos);
+            float ringId = floor(ringPos);
+            float ring = exp(-abs(ringF - 0.5) * 34.0);
+            float ringOdd = step(0.5, fract(ringId * 0.5));
+            vec3 ringCol = mix(na, nc, ringOdd);
+            ring *= wallFade * (0.5 + arms * 0.5) * (0.42 + uEnergy * 0.6 + uBass * 0.5 + uFlare * 1.1);
+
+            // twisted neon lattice on the tunnel walls
+            float lonF = fract(la / 6.2831853 * 26.0 + depth * 1.4);
+            float lon = exp(-abs(lonF - 0.5) * 26.0);
+            float lattice = lon * wallFade * (0.08 + uMid * 0.4 + uFlare * 0.3);
+            lattice += lon * exp(-abs(ringF - 0.5) * 18.0) * wallFade * (0.45 + uFlare * 0.9);
+
+            // crackling neon filaments along the spiral arms
+            float fil = fbm(vec2(spiral * 2.2 + uTime * 0.6, depth * 4.0 - travel * 0.5));
+            float filament = exp(-abs(fil - 0.5) * 36.0) * wallFade * (0.14 + uMid * 0.7 + uTreble * 0.4 + uFlare * 0.6);
 
             float stars = 0.0;
+            float starTint = 0.0;
             for (int i = 0; i < 2; i++) {
               float fi = float(i);
               float lanes = 18.0 + fi * 9.0;
@@ -764,16 +752,22 @@ export function createWarp(): VisualStyle {
                 float ad = abs(fract(laneF + hash(id + 2.7)) - 0.5);
                 streak *= 1.0 - smoothstep(0.012, 0.07, ad);
                 stars += streak;
+                starTint += streak * step(0.5, hash(id + 5.3));
               }
             }
-            stars *= 0.55 + uTreble * 0.28;
+            stars *= 0.65 + uTreble * 0.4 + uFlare * 0.4;
+            float tintMix = clamp(starTint / max(stars, 0.001), 0.0, 1.0);
+            vec3 starCol = mix(mix(vec3(0.84, 0.91, 1.0), na, 0.7), mix(vec3(0.84, 0.91, 1.0), nc, 0.7), tintMix);
 
             float space = fbm(luv * 3.0) * smoothstep(0.55, 1.4, lr);
             vec3 col = vec3(0.008, 0.01, 0.028);
             col += wall;
             col += exitCol * (core * 0.55 + throat);
             col += chroma;
-            col += mix(vec3(0.84, 0.91, 1.0), cc, 0.28) * stars;
+            col += ringCol * ring;
+            col += na * lattice;
+            col += nc * filament;
+            col += starCol * stars;
             col += mix(ca, cb, 0.5) * space * 0.12;
             col *= smoothstep(1.48, 0.26, lr);
             gl_FragColor = vec4(min(col, vec3(0.92)), 1.0);
@@ -786,14 +780,16 @@ export function createWarp(): VisualStyle {
       scene.add(mesh)
       material.uniforms.uRes.value.set(window.innerWidth, window.innerHeight)
     },
-    update(m, time, _dt, palette, speed = 1) {
+    update(m, time, dt, palette, speed = 1) {
       if (!material) return
+      flare = Math.max(flare * Math.exp(-dt * 6), m.beat ? 1 : 0)
       material.uniforms.uTime.value = speed > 0.001 ? time / speed : time
       material.uniforms.uSpeed.value = speed
       material.uniforms.uBass.value = m.bass
       material.uniforms.uMid.value = m.mid
       material.uniforms.uTreble.value = m.treble
       material.uniforms.uEnergy.value = m.energy
+      material.uniforms.uFlare.value = flare
       material.uniforms.uMode.value = palette.seed % 3
       colorFrom(palette.a, material.uniforms.uA.value)
       colorFrom(palette.b, material.uniforms.uB.value)
@@ -1279,6 +1275,31 @@ export function createCycle(): VisualStyle {
   const gridCell = 2.7
   const gridBarCount = 42
   const gridLoop = gridCell * gridBarCount
+  const clouds: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; speed: number; lit: number }[] = []
+  let plane: THREE.Group | null = null
+  let planeStrobe: THREE.Mesh | null = null
+  let planeBeacon: THREE.Mesh | null = null
+  let planeActive = false
+  let planeDir = 1
+  let planeSpeed = 12
+  let planeTimer = 5
+  let heli: THREE.Group | null = null
+  let heliRotor: THREE.Group | null = null
+  let heliTailRotor: THREE.Mesh | null = null
+  let heliBeacon: THREE.Mesh | null = null
+  let heliBeam: THREE.Mesh | null = null
+  let heliActive = false
+  let heliT = 0
+  let heliDur = 22
+  let heliTimer = 12
+  const heliFrom = new THREE.Vector3()
+  const heliTo = new THREE.Vector3()
+  let driveRng: () => number = Math.random
+  const scanSegments = 26
+  const scanBarWidth = 1.62
+  const scanSegs: THREE.MeshBasicMaterial[] = []
+  let scanGlowMat: THREE.MeshBasicMaterial | null = null
+  let scanPhase = 0
 
   return {
     id: 'drive',
@@ -1377,6 +1398,164 @@ export function createCycle(): VisualStyle {
       const sunHalo = new THREE.Mesh(new THREE.SphereGeometry(7.2, 16, 16), sunHaloMat)
       sunHalo.position.copy(sun.position)
       group.add(sunHalo)
+
+      driveRng = () => rng.next()
+      planeActive = false
+      planeTimer = 5
+      heliActive = false
+      heliTimer = 12
+
+      const cloudTex = (seed: number) => {
+        const tex = canvasTexture(256, 128, (ctx) => {
+          ctx.clearRect(0, 0, 256, 128)
+          const r = styleRng(seed)
+          for (let i = 0; i < 14; i++) {
+            const cx = 36 + r.next() * 184
+            const cy = 46 + r.next() * 36 + (i % 3) * 6
+            const rad = 20 + r.next() * 30
+            const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad)
+            g.addColorStop(0, 'rgba(255,255,255,0.5)')
+            g.addColorStop(0.55, 'rgba(255,255,255,0.2)')
+            g.addColorStop(1, 'rgba(255,255,255,0)')
+            ctx.fillStyle = g
+            ctx.fillRect(cx - rad, cy - rad, rad * 2, rad * 2)
+          }
+        })
+        tex.wrapS = THREE.ClampToEdgeWrapping
+        tex.wrapT = THREE.ClampToEdgeWrapping
+        return tex
+      }
+      const cloudTextures = [cloudTex(palette.seed + 11), cloudTex(palette.seed + 47), cloudTex(palette.seed + 83)]
+      const cloudGeo = new THREE.PlaneGeometry(1, 1)
+      for (let i = 0; i < 16; i++) {
+        const depth = rng.next()
+        const mat = new THREE.MeshBasicMaterial({
+          map: cloudTextures[i % 3],
+          transparent: true,
+          opacity: 0.35 + rng.next() * 0.3,
+          depthWrite: false,
+          fog: false,
+          color: 0x14141e,
+        })
+        const mesh = new THREE.Mesh(cloudGeo, mat)
+        const width = 14 + rng.next() * 18 + depth * 10
+        mesh.scale.set(width, width * (0.28 + rng.next() * 0.14), 1)
+        const y = 9 + rng.next() * 20
+        mesh.position.set((rng.next() - 0.5) * 210, y, -52 - depth * 55)
+        mesh.renderOrder = -1
+        clouds.push({ mesh, mat, speed: 1.4 + (1 - depth) * 1.8 + rng.next() * 0.6, lit: 0.22 + (1 - (y - 9) / 20) * 0.5 })
+        group.add(mesh)
+      }
+
+      const craftMat = new THREE.MeshStandardMaterial({
+        color: 0x2a2e3a,
+        metalness: 0.55,
+        roughness: 0.45,
+        emissive: 0x1a1c26,
+        emissiveIntensity: 0.6,
+      })
+      const redMat = new THREE.MeshBasicMaterial({ color: 0xff2a2a })
+      const greenMat = new THREE.MeshBasicMaterial({ color: 0x33ff66 })
+      const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+
+      plane = new THREE.Group()
+      const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 2.6, 10), craftMat)
+      fuselage.rotation.z = Math.PI / 2
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.5, 10), craftMat)
+      nose.rotation.z = -Math.PI / 2
+      nose.position.x = 1.55
+      const tailCone = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.7, 10), craftMat)
+      tailCone.rotation.z = Math.PI / 2
+      tailCone.position.x = -1.65
+      const wings = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.05, 3.6), craftMat)
+      wings.position.set(0.1, -0.05, 0)
+      const hStab = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.04, 1.3), craftMat)
+      hStab.position.set(-1.6, 0.05, 0)
+      const vFin = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.6, 0.05), craftMat)
+      vFin.position.set(-1.62, 0.38, 0)
+      const navLeft = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), redMat)
+      navLeft.position.set(0.15, -0.03, -1.8)
+      const navRight = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), greenMat)
+      navRight.position.set(0.15, -0.03, 1.8)
+      planeStrobe = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), whiteMat)
+      planeStrobe.position.set(-1.9, 0.05, 0)
+      planeBeacon = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 6), redMat)
+      planeBeacon.position.set(-0.2, -0.22, 0)
+      const cabinLights = new THREE.Mesh(
+        new THREE.BoxGeometry(1.9, 0.05, 0.02),
+        new THREE.MeshBasicMaterial({ color: 0xffe0b0, transparent: true, opacity: 0.7 }),
+      )
+      cabinLights.position.set(0.1, 0.03, 0.165)
+      const cabinLights2 = cabinLights.clone()
+      cabinLights2.position.z = -0.165
+      plane.add(fuselage, nose, tailCone, wings, hStab, vFin, navLeft, navRight, planeStrobe, planeBeacon, cabinLights, cabinLights2)
+      plane.scale.setScalar(2.8)
+      plane.visible = false
+      group.add(plane)
+
+      heli = new THREE.Group()
+      const cabin = new THREE.Mesh(new THREE.SphereGeometry(0.62, 14, 12), craftMat)
+      cabin.scale.set(0.8, 0.7, 1.25)
+      const canopy = new THREE.Mesh(
+        new THREE.SphereGeometry(0.5, 12, 10),
+        new THREE.MeshStandardMaterial({ color: 0x081018, metalness: 0.5, roughness: 0.1 }),
+      )
+      canopy.scale.set(0.72, 0.6, 0.9)
+      canopy.position.set(0, 0.08, 0.42)
+      const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.14, 2.2, 8), craftMat)
+      boom.rotation.x = Math.PI / 2
+      boom.position.set(0, 0.05, -1.5)
+      const finV = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.6, 0.35), craftMat)
+      finV.position.set(0, 0.3, -2.55)
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.35, 6), craftMat)
+      mast.position.set(0, 0.55, 0)
+      heliRotor = new THREE.Group()
+      const bladeA = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.03, 0.16), craftMat)
+      const bladeB = bladeA.clone()
+      bladeB.rotation.y = Math.PI / 2
+      const rotorDisc = new THREE.Mesh(
+        new THREE.CircleGeometry(2.7, 28),
+        new THREE.MeshBasicMaterial({ color: 0x9aa4b8, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide }),
+      )
+      rotorDisc.rotation.x = -Math.PI / 2
+      heliRotor.add(bladeA, bladeB, rotorDisc)
+      heliRotor.position.set(0, 0.74, 0)
+      heliTailRotor = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.9, 0.1), craftMat)
+      heliTailRotor.position.set(0.08, 0.3, -2.6)
+      for (const s of [-1, 1]) {
+        const skid = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 1.5), craftMat)
+        skid.position.set(s * 0.42, -0.6, 0.1)
+        const strut = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.3, 0.04), craftMat)
+        strut.position.set(s * 0.4, -0.45, 0.1)
+        heli.add(skid, strut)
+      }
+      heliBeacon = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), redMat)
+      heliBeacon.position.set(0, 0.32, -2.3)
+      const belly = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 6), whiteMat)
+      belly.position.set(0, -0.44, 0.2)
+      const heliNav = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 6), greenMat)
+      heliNav.position.set(0.5, -0.1, 0.3)
+      const heliNav2 = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 6), redMat)
+      heliNav2.position.set(-0.5, -0.1, 0.3)
+      heli.add(heliNav, heliNav2)
+      const beamGeo = new THREE.ConeGeometry(1.6, 7, 18, 1, true)
+      beamGeo.translate(0, -3.5, 0)
+      heliBeam = new THREE.Mesh(
+        beamGeo,
+        new THREE.MeshBasicMaterial({
+          color: 0xdfe8ff,
+          transparent: true,
+          opacity: 0.06,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+      )
+      heliBeam.position.set(0, -0.4, 0.2)
+      heliBeam.rotation.x = -0.4
+      heli.add(cabin, canopy, boom, finV, mast, heliRotor, heliTailRotor, heliBeacon, belly, heliBeam)
+      heli.scale.setScalar(1.5)
+      heli.visible = false
+      group.add(heli)
 
       gridMat = new THREE.ShaderMaterial({
         fog: false,
@@ -1673,14 +1852,28 @@ export function createCycle(): VisualStyle {
       sideGlassL.position.set(-0.87, 0.86, 0.18)
       const sideGlassR = sideGlassL.clone()
       sideGlassR.position.x = 0.87
-      const lightBar = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.08, 0.05), stripMat)
-      lightBar.position.set(0, 0.7, 1.24)
-      const barGlow = new THREE.Mesh(
-        new THREE.BoxGeometry(1.66, 0.16, 0.03),
-        new THREE.MeshBasicMaterial({ color: neon, transparent: true, opacity: 0.32, depthWrite: false }),
-      )
-      barGlow.position.set(0, 0.7, 1.27)
-      neonMats.push(barGlow.material as THREE.MeshBasicMaterial)
+      const lightBar = new THREE.Group()
+      const barHousing = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.1, 0.04), darkMat)
+      barHousing.position.set(0, 0.7, 1.235)
+      lightBar.add(barHousing)
+      const segGeo = new THREE.BoxGeometry(scanBarWidth / scanSegments - 0.008, 0.07, 0.05)
+      scanSegs.length = 0
+      for (let i = 0; i < scanSegments; i++) {
+        const segMat = new THREE.MeshBasicMaterial({ color: 0x300308 })
+        const seg = new THREE.Mesh(segGeo, segMat)
+        seg.position.set(((i + 0.5) / scanSegments - 0.5) * scanBarWidth, 0.7, 1.25)
+        scanSegs.push(segMat)
+        lightBar.add(seg)
+      }
+      scanGlowMat = new THREE.MeshBasicMaterial({
+        color: 0xff1a2a,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+      })
+      const barGlow = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, 0.03), scanGlowMat)
+      barGlow.position.set(0, 0.7, 1.28)
+      barGlow.name = 'drive-scan-glow'
       const brakeMat = new THREE.MeshBasicMaterial({ color: 0xff1428 })
       const brakeGlowMat = new THREE.MeshBasicMaterial({
         color: 0xff2a3a,
@@ -1803,6 +1996,7 @@ export function createCycle(): VisualStyle {
       under.name = 'drive-under'
       const brakeLit = new THREE.PointLight(0xff2030, 1.8, 4.2)
       brakeLit.position.set(0, 0.7, 5.45)
+      brakeLit.name = 'drive-scan-light'
       group.add(hemi, sunLit, fill, rim, under, brakeLit)
 
       scene.add(group)
@@ -1874,12 +2068,101 @@ export function createCycle(): VisualStyle {
         bike.position.y = Math.sin(time * 8.5) * 0.012
         bike.rotation.z = Math.sin(time * 0.7) * 0.01
         bike.rotation.x = Math.sin(time * 1.1) * 0.006
+
+        // KITT-style scanner: red pulse sweeping left to right and back with a fading trail
+        scanPhase = (scanPhase + dt * (0.5 + m.energy * 0.25)) % 1
+        const tri = 1 - Math.abs(scanPhase * 2 - 1)
+        const eased = tri * tri * (3 - 2 * tri)
+        const scanX = (eased - 0.5) * scanBarWidth
+        const dir = scanPhase < 0.5 ? 1 : -1
+        const hot = 1 + m.bass * 0.5
+        for (let i = 0; i < scanSegs.length; i++) {
+          const segX = ((i + 0.5) / scanSegments - 0.5) * scanBarWidth
+          const d = segX - scanX
+          const head = Math.exp(-(d * d) * 220)
+          const behind = d * dir < 0 ? Math.exp(-Math.abs(d) * 7.5) * 0.55 : 0
+          const level = Math.min(1, head + behind)
+          scanSegs[i].color.setRGB(0.16 + level * 1.15 * hot, 0.01 + level * 0.06, 0.02 + level * 0.1)
+        }
+        const glow = bike.getObjectByName('drive-scan-glow')
+        if (glow) glow.position.x = scanX
+        if (scanGlowMat) scanGlowMat.opacity = 0.42 + m.bass * 0.25
+        const scanLit = group.getObjectByName('drive-scan-light') as THREE.PointLight | undefined
+        if (scanLit) {
+          scanLit.position.x = scanX * bike.scale.x
+          scanLit.intensity = 2.2 + m.bass * 1.6
+        }
       }
       const under = group.getObjectByName('drive-under') as THREE.PointLight | undefined
       if (under) {
         under.color.copy(accent)
         under.intensity = 1.8 + m.energy * 1.4
       }
+
+      const cloudBase = new THREE.Color(0.1, 0.1, 0.16)
+      const cloudWarm = sunCol.clone().multiplyScalar(0.5)
+      for (const c of clouds) {
+        c.mesh.position.x += c.speed * dt
+        if (c.mesh.position.x > 118) c.mesh.position.x = -118
+        c.mat.color.copy(cloudBase).lerp(cloudWarm, c.lit)
+      }
+
+      if (plane) {
+        planeTimer -= dt
+        if (!planeActive && planeTimer <= 0) {
+          planeActive = true
+          planeDir = driveRng() > 0.5 ? 1 : -1
+          planeSpeed = 10 + driveRng() * 5
+          plane.position.set(-planeDir * 118, 17 + driveRng() * 9, -56 - driveRng() * 24)
+          plane.rotation.y = planeDir > 0 ? 0 : Math.PI
+          plane.visible = true
+        }
+        if (planeActive) {
+          plane.position.x += planeDir * planeSpeed * dt
+          if (Math.abs(plane.position.x) > 122) {
+            planeActive = false
+            plane.visible = false
+            planeTimer = 14 + driveRng() * 16
+          }
+          if (planeStrobe) planeStrobe.visible = (time * 1.3) % 1 < 0.07
+          if (planeBeacon) planeBeacon.visible = (time * 0.9 + 0.4) % 1 < 0.18
+        }
+      }
+
+      if (heli) {
+        heliTimer -= dt
+        if (!heliActive && heliTimer <= 0) {
+          heliActive = true
+          heliT = 0
+          heliDur = 20 + driveRng() * 6
+          const side = driveRng() > 0.5 ? 1 : -1
+          heliFrom.set(side * (9 + driveRng() * 5), 5.5 + driveRng() * 2.5, -12 - driveRng() * 4)
+          heliTo.set(side * (1 + driveRng() * 4), 12 + driveRng() * 6, -86)
+          heli.visible = true
+        }
+        if (heliActive) {
+          heliT += dt / heliDur
+          if (heliT >= 1) {
+            heliActive = false
+            heli.visible = false
+            heliTimer = 18 + driveRng() * 20
+          } else {
+            const bob = Math.sin(time * 2.1) * 0.12
+            heli.position.lerpVectors(heliFrom, heliTo, heliT)
+            heli.position.y += bob
+            heli.lookAt(heliTo.x, heliTo.y + bob, heliTo.z)
+            heli.rotation.x += 0.08
+            if (heliRotor) heliRotor.rotation.y += dt * 38
+            if (heliTailRotor) heliTailRotor.rotation.x += dt * 52
+            if (heliBeacon) heliBeacon.visible = (time * 1.1) % 1 < 0.2
+            if (heliBeam) {
+              const beamMat = heliBeam.material as THREE.MeshBasicMaterial
+              beamMat.opacity = 0.05 + Math.sin(time * 0.8) * 0.015
+            }
+          }
+        }
+      }
+
       cameraRef.position.set(2.45 + Math.sin(time * 0.16) * 0.08, 2.28 + Math.sin(time * 1.05) * 0.02, 8.7)
       cameraRef.lookAt(-0.15, 0.58, -14)
     },
@@ -1900,6 +2183,17 @@ export function createCycle(): VisualStyle {
       sunHaloMat = null
       sunLit = null
       bike = null
+      plane = null
+      planeStrobe = null
+      planeBeacon = null
+      heli = null
+      heliRotor = null
+      heliTailRotor = null
+      heliBeacon = null
+      heliBeam = null
+      scanGlowMat = null
+      scanSegs.length = 0
+      clouds.length = 0
       lamps.length = 0
       gridBars.length = 0
       streaks.length = 0
@@ -2049,34 +2343,72 @@ export function createStorm(): VisualStyle {
 }
 
 export function createHive(): VisualStyle {
+  const R = 3.1
+  const TRAIL = 30
   let group: THREE.Group | null = null
   let comb: THREE.InstancedMesh | null = null
   let honey: THREE.InstancedMesh | null = null
+  let neonRings: THREE.InstancedMesh | null = null
+  let core: THREE.Mesh | null = null
+  let pollen: THREE.Points | null = null
+  let cameraRef: THREE.PerspectiveCamera | null = null
+  let keyLight: THREE.PointLight | null = null
+  let coreLight: THREE.PointLight | null = null
+  let haloGroup: THREE.Group | null = null
+  let flash = 0
+  let sampleAcc = 0
+  const halos: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; bead: THREE.Mesh; rate: number; beadRate: number; tilt: number }[] = []
   const dummy = new THREE.Object3D()
   const color = new THREE.Color()
   const look = new THREE.Vector3()
-  const cells: { x: number; y: number; z: number; honey: number }[] = []
-  const bees: {
+  const tmp = new THREE.Vector3()
+  const tmp2 = new THREE.Vector3()
+  const side = new THREE.Vector3()
+  const cells: {
+    pos: THREE.Vector3
+    normal: THREE.Vector3
+    quat: THREE.Quaternion
+    radius: number
+    honey: number
+    neon: number
+    tint: number
+  }[] = []
+  type Bee = {
     root: THREE.Group
     left: THREE.Object3D
     right: THREE.Object3D
-    phase: number
+    glowMat: THREE.MeshStandardMaterial
+    u: THREE.Vector3
+    v: THREE.Vector3
+    axis: THREE.Vector3
+    radius: number
     pace: number
-    spread: number
-    lift: number
-  }[] = []
+    phase: number
+    wobble: number
+    trail: THREE.Mesh
+    trailMat: THREE.MeshBasicMaterial
+    history: Float32Array
+    accent: boolean
+  }
+  const bees: Bee[] = []
 
   const makeBee = () => {
     const root = new THREE.Group()
     const yellow = new THREE.MeshStandardMaterial({
       color: 0xf2c14e,
       emissive: 0xf2c14e,
-      emissiveIntensity: 0.18,
+      emissiveIntensity: 0.3,
       roughness: 0.45,
     })
     const black = new THREE.MeshStandardMaterial({
       color: 0x1c140c,
       roughness: 0.55,
+    })
+    const glowMat = new THREE.MeshStandardMaterial({
+      color: 0x101010,
+      emissive: 0x44ffcc,
+      emissiveIntensity: 1.6,
+      roughness: 0.3,
     })
     const wingMat = new THREE.MeshStandardMaterial({
       color: 0xf4f0d8,
@@ -2090,6 +2422,10 @@ export function createHive(): VisualStyle {
     const thorax = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 10), yellow)
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.048, 8, 8), black)
     head.position.set(0, 0.01, 0.11)
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.014, 6, 6), glowMat)
+    eyeL.position.set(-0.03, 0.025, 0.145)
+    const eyeR = eyeL.clone()
+    eyeR.position.x = 0.03
     const abdomen = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 10), yellow)
     abdomen.scale.set(0.78, 0.78, 1.45)
     abdomen.position.set(0, -0.01, -0.14)
@@ -2098,6 +2434,8 @@ export function createHive(): VisualStyle {
     stripe.position.set(0, -0.01, -0.12)
     const stripe2 = stripe.clone()
     stripe2.position.z = -0.18
+    const sting = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), glowMat)
+    sting.position.set(0, -0.01, -0.27)
     const wingGeo = new THREE.PlaneGeometry(0.18, 0.09)
     const left = new THREE.Mesh(wingGeo, wingMat)
     const right = new THREE.Mesh(wingGeo, wingMat)
@@ -2105,29 +2443,109 @@ export function createHive(): VisualStyle {
     right.position.set(0.04, 0.06, 0.02)
     left.rotation.y = 0.35
     right.rotation.y = -0.35
-    root.add(thorax, head, abdomen, stripe, stripe2, left, right)
-    return { root, left, right }
+    root.add(thorax, head, eyeL, eyeR, abdomen, stripe, stripe2, sting, left, right)
+    return { root, left, right, glowMat }
+  }
+
+  const makeTrail = () => {
+    const geo = new THREE.BufferGeometry()
+    const pos = new Float32Array(TRAIL * 2 * 3)
+    const col = new Float32Array(TRAIL * 2 * 3)
+    const idx: number[] = []
+    for (let i = 0; i < TRAIL - 1; i++) {
+      const a = i * 2
+      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    geo.setIndex(idx)
+    const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.frustumCulled = false
+    return { mesh, mat }
+  }
+
+  const beePos = (bee: Bee, t: number, out: THREE.Vector3) => {
+    const r = bee.radius + Math.sin(t * 2.7 + bee.phase) * 0.3
+    out
+      .copy(bee.u)
+      .multiplyScalar(Math.cos(t) * r)
+      .addScaledVector(bee.v, Math.sin(t) * r)
+      .addScaledVector(bee.axis, Math.sin(t * 1.7 + bee.phase * 0.5) * bee.wobble)
+    return out
   }
 
   return {
     id: 'hive',
     label: 'Hive',
-    hint: 'Honeycomb and bees',
+    hint: 'Neon honeycomb sphere',
+    bloom: { base: 0.34, pulse: 0.16 },
     mount(scene, camera, palette) {
-      camera.position.set(0.35, 0.85, 9.4)
-      camera.lookAt(0, 0.35, 0)
-      scene.fog = new THREE.FogExp2(0x120b07, 0.038)
-      scene.background = new THREE.Color(0x120b07)
+      cameraRef = camera
+      camera.position.set(0, 1.2, 9.4)
+      camera.lookAt(0, 0, 0)
+      scene.fog = new THREE.FogExp2(0x0a0705, 0.03)
+      scene.background = new THREE.Color(0x0a0705)
       group = new THREE.Group()
       const rng = styleRng(palette.seed)
-      const hex = hexCellTexture()
+      flash = 0
+      sampleAcc = 0
+
+      const ico = new THREE.IcosahedronGeometry(R, 7)
+      const pa = ico.getAttribute('position')
+      const seen = new Map<string, THREE.Vector3>()
+      for (let i = 0; i < pa.count; i++) {
+        const v = new THREE.Vector3().fromBufferAttribute(pa, i)
+        const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
+        if (!seen.has(key)) seen.set(key, v)
+      }
+      ico.dispose()
+      const verts = [...seen.values()]
+      for (let i = 0; i < verts.length; i++) {
+        const v = verts[i]
+        let nearest = verts[i === 0 ? 1 : 0]
+        let best = Infinity
+        for (let j = 0; j < verts.length; j++) {
+          if (j === i) continue
+          const d = v.distanceToSquared(verts[j])
+          if (d < best) {
+            best = d
+            nearest = verts[j]
+          }
+        }
+        const dist = Math.sqrt(best)
+        const normal = v.clone().normalize()
+        dummy.position.copy(v)
+        dummy.rotation.set(0, 0, 0)
+        dummy.scale.setScalar(1)
+        dummy.lookAt(v.x * 2, v.y * 2, v.z * 2)
+        tmp.set(1, 0, 0).applyQuaternion(dummy.quaternion)
+        tmp2.set(0, 1, 0).applyQuaternion(dummy.quaternion)
+        const d = nearest.clone().sub(v).projectOnPlane(normal).normalize()
+        dummy.rotateZ(Math.atan2(d.dot(tmp2), d.dot(tmp)))
+        cells.push({
+          pos: v.clone(),
+          normal,
+          quat: dummy.quaternion.clone(),
+          radius: (dist / Math.sqrt(3)) * 0.94,
+          honey: rng.next() > 0.36 ? 0.4 + rng.next() * 0.6 : 0,
+          neon: rng.next() < 0.2 ? 0.6 + rng.next() * 0.4 : 0,
+          tint: rng.next(),
+        })
+      }
+
       const wax = new THREE.MeshStandardMaterial({
-        map: hex,
-        emissiveMap: hex,
-        emissive: new THREE.Color(0xc48a32),
-        emissiveIntensity: 0.22,
-        metalness: 0.08,
-        roughness: 0.62,
+        color: 0xffffff,
+        emissive: new THREE.Color(0x7a4a14),
+        emissiveIntensity: 0.16,
+        metalness: 0.12,
+        roughness: 0.58,
       })
       const nectar = new THREE.MeshStandardMaterial({
         color: 0xffffff,
@@ -2136,124 +2554,291 @@ export function createHive(): VisualStyle {
         metalness: 0.2,
         roughness: 0.28,
       })
-      const cellGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.4, 6)
+      const neonMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+      const cellGeo = new THREE.CylinderGeometry(1, 1, 1, 6)
       cellGeo.rotateX(Math.PI / 2)
-      const honeyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.08, 6)
+      const honeyGeo = new THREE.CylinderGeometry(0.72, 0.72, 1, 6)
       honeyGeo.rotateX(Math.PI / 2)
-      const spacingX = 0.58
-      const spacingY = 0.5
-      for (let row = -8; row <= 8; row++) {
-        for (let col = -7; col <= 7; col++) {
-          const x = (col + (row & 1) * 0.5) * spacingX
-          const y = row * spacingY
-          if (Math.hypot(x * 0.92, y * 0.72) > 4.15 || rng.next() < 0.04) continue
-          cells.push({
-            x,
-            y,
-            z: x * x * 0.028 - 0.15,
-            honey: rng.next() > 0.38 ? 0.45 + rng.next() * 0.55 : 0,
-          })
-        }
-      }
+      const ringGeo = new THREE.RingGeometry(0.74, 0.9, 6)
+      ringGeo.rotateZ(Math.PI / 6)
+
       comb = new THREE.InstancedMesh(cellGeo, wax, cells.length)
       honey = new THREE.InstancedMesh(honeyGeo, nectar, cells.length)
-      comb.count = cells.length
-      honey.count = cells.length
+      neonRings = new THREE.InstancedMesh(ringGeo, neonMat, cells.length)
       for (let i = 0; i < cells.length; i++) {
         const cell = cells[i]
-        dummy.position.set(cell.x, cell.y, cell.z)
-        dummy.scale.setScalar(1)
-        dummy.rotation.set(0, 0, 0)
+        dummy.position.copy(cell.pos)
+        dummy.quaternion.copy(cell.quat)
+        dummy.scale.set(cell.radius, cell.radius, 0.55)
         dummy.updateMatrix()
         comb.setMatrixAt(i, dummy.matrix)
-        color.setRGB(0.86, 0.62, 0.22).lerp(new THREE.Color().setRGB(...palette.a), 0.28)
-        comb.setColorAt(i, color)
-        dummy.position.z = cell.z + 0.16
-        dummy.scale.setScalar(cell.honey > 0 ? 1 : 0.001)
-        dummy.updateMatrix()
+        comb.setColorAt(i, color.setRGB(0.82, 0.56, 0.2))
         honey.setMatrixAt(i, dummy.matrix)
-        color.setRGB(...palette.c).lerp(new THREE.Color(0xffc056), 0.55)
-        honey.setColorAt(i, color)
+        honey.setColorAt(i, color.setRGB(1, 0.75, 0.35))
+        neonRings.setMatrixAt(i, dummy.matrix)
+        neonRings.setColorAt(i, color.setRGB(0, 0, 0))
       }
-      if (comb.instanceColor) comb.instanceColor.needsUpdate = true
-      if (honey.instanceColor) honey.instanceColor.needsUpdate = true
-      group.add(comb, honey)
+      group.add(comb, honey, neonRings)
 
-      const beeCount = 7
+      core = new THREE.Mesh(
+        new THREE.SphereGeometry(R + 0.12, 64, 40),
+        new THREE.MeshBasicMaterial({ color: 0x44ffcc }),
+      )
+      group.add(core)
+
+      haloGroup = new THREE.Group()
+      const beadGeo = new THREE.SphereGeometry(0.11, 10, 10)
+      for (let i = 0; i < 3; i++) {
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.85,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        })
+        const radius = R + 1.7 + i * 0.35
+        const mesh = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.022, 8, 160), mat)
+        const bead = new THREE.Mesh(beadGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }))
+        bead.position.set(radius, 0, 0)
+        mesh.add(bead)
+        const tilt = 0.5 + i * 0.75
+        mesh.rotation.x = tilt
+        mesh.rotation.y = i * 1.1
+        halos.push({ mesh, mat, bead, rate: 0.22 + i * 0.09, beadRate: (i % 2 ? -1 : 1) * (0.9 + i * 0.25), tilt })
+        haloGroup.add(mesh)
+      }
+      group.add(haloGroup)
+
+      const pollenCount = 320
+      const pp = new Float32Array(pollenCount * 3)
+      for (let i = 0; i < pollenCount; i++) {
+        const dir = new THREE.Vector3(rng.next() - 0.5, rng.next() - 0.5, rng.next() - 0.5).normalize()
+        const r = R + 0.45 + rng.next() * 3.4
+        pp[i * 3] = dir.x * r
+        pp[i * 3 + 1] = dir.y * r
+        pp[i * 3 + 2] = dir.z * r
+      }
+      const pollenGeo = new THREE.BufferGeometry()
+      pollenGeo.setAttribute('position', new THREE.BufferAttribute(pp, 3))
+      pollen = new THREE.Points(
+        pollenGeo,
+        new THREE.PointsMaterial({
+          color: 0xffcc66,
+          size: 0.055,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: 0.8,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      )
+      group.add(pollen)
+
+      const beeCount = 9
       for (let i = 0; i < beeCount; i++) {
         const parts = makeBee()
-        bees.push({
+        const axis = new THREE.Vector3(rng.next() - 0.5, rng.next() - 0.5, rng.next() - 0.5).normalize()
+        const u = new THREE.Vector3(0, 1, 0)
+        if (Math.abs(axis.y) > 0.9) u.set(1, 0, 0)
+        u.cross(axis).normalize()
+        const v = new THREE.Vector3().crossVectors(axis, u).normalize()
+        const trail = makeTrail()
+        const bee: Bee = {
           root: parts.root,
           left: parts.left,
           right: parts.right,
+          glowMat: parts.glowMat,
+          u,
+          v,
+          axis,
+          radius: R + 0.95 + rng.next() * 1.1,
+          pace: 0.45 + rng.next() * 0.4,
           phase: rng.next() * Math.PI * 2,
-          pace: 0.7 + rng.next() * 0.7,
-          spread: 1.7 + rng.next() * 1.4,
-          lift: 0.15 + rng.next() * 1.6,
-        })
-        group.add(parts.root)
+          wobble: 0.25 + rng.next() * 0.35,
+          trail: trail.mesh,
+          trailMat: trail.mat,
+          history: new Float32Array(TRAIL * 3),
+          accent: i % 2 === 1,
+        }
+        beePos(bee, bee.phase, tmp)
+        for (let k = 0; k < TRAIL; k++) {
+          bee.history[k * 3] = tmp.x
+          bee.history[k * 3 + 1] = tmp.y
+          bee.history[k * 3 + 2] = tmp.z
+        }
+        bees.push(bee)
+        group.add(parts.root, trail.mesh)
       }
 
-      const key = new THREE.PointLight(0xffc56a, 18, 26)
-      key.position.set(2.2, 3.4, 6)
-      key.name = 'style-light'
-      const fill = new THREE.PointLight(0x4a2a10, 7, 20)
-      fill.position.set(-4, 0.4, 4)
+      keyLight = new THREE.PointLight(0xffc56a, 26, 30)
+      keyLight.position.set(2.2, 3.4, 8)
+      keyLight.name = 'style-light'
+      coreLight = new THREE.PointLight(0x44ffcc, 6, 14)
+      coreLight.position.set(0, 0, 0)
+      coreLight.name = 'style-light'
+      const fill = new THREE.PointLight(0x4a2a10, 6, 24)
+      fill.position.set(-6, -2, -4)
       fill.name = 'style-light'
-      group.add(key, fill)
+      group.add(keyLight, coreLight, fill)
       scene.add(group)
     },
-    update(m, time, _dt, palette, speed = 1) {
-      if (!group || !comb || !honey) return
+    update(m, time, dt, palette, speed = 1) {
+      if (!group || !comb || !honey || !neonRings || !cameraRef) return
+      const neon = new THREE.Color().setRGB(...palette.a)
+      const accent = new THREE.Color().setRGB(...palette.c)
+      const lift = (c: THREE.Color, target: number) => {
+        const luma = Math.max(c.r * 0.299 + c.g * 0.587 + c.b * 0.114, 0.05)
+        return c.multiplyScalar(target / luma)
+      }
+      lift(neon, 0.75)
+      lift(accent, 0.75)
+      flash = Math.max(flash * Math.exp(-dt * 5), m.beat ? 1 : 0)
+
       const wax = comb.material as THREE.MeshStandardMaterial
-      wax.emissive.setRGB(0.55 + palette.a[0] * 0.25, 0.32 + palette.a[1] * 0.15, 0.08)
-      wax.emissiveIntensity = 0.16 + m.energy * 0.18
+      wax.emissive.copy(neon).multiplyScalar(0.35).add(new THREE.Color(0.3, 0.16, 0.03))
+      wax.emissiveIntensity = 0.18 + m.energy * 0.2 + flash * 0.1
       const nectar = honey.material as THREE.MeshStandardMaterial
-      nectar.emissive.setRGB(palette.c[0], palette.c[1] * 0.7 + 0.25, palette.c[2] * 0.25)
-      nectar.emissiveIntensity = 0.45 + m.energy * 0.4
+      nectar.emissive.copy(accent).lerp(new THREE.Color(1, 0.65, 0.25), 0.55)
+      nectar.emissiveIntensity = 0.5 + m.energy * 0.5 + flash * 0.3
       for (let i = 0; i < cells.length; i++) {
         const cell = cells[i]
-        const spec = m.spectrum[i % m.spectrum.length]
-        dummy.position.set(cell.x, cell.y, cell.z)
-        dummy.scale.setScalar(1)
-        dummy.rotation.set(0, 0, 0)
-        dummy.updateMatrix()
-        comb.setMatrixAt(i, dummy.matrix)
-        color.setRGB(0.84, 0.6, 0.2).lerp(new THREE.Color().setRGB(...palette.a), 0.3)
+        const spec = m.spectrum[(i * 7) % m.spectrum.length]
+        color.setRGB(0.8, 0.54, 0.18).lerp(neon, 0.1 + cell.tint * 0.15)
         comb.setColorAt(i, color)
-        const fill = cell.honey * (0.7 + spec * 0.55 + m.bass * 0.12)
-        dummy.position.z = cell.z + 0.16
-        dummy.scale.setScalar(cell.honey > 0 ? 0.75 + fill * 0.45 : 0.001)
+        const fill = cell.honey * (0.7 + spec * 0.55 + m.bass * 0.15)
+        dummy.position.copy(cell.pos).addScaledVector(cell.normal, 0.2)
+        dummy.quaternion.copy(cell.quat)
+        const s = cell.honey > 0 ? cell.radius * (0.8 + fill * 0.35) : 0.001
+        dummy.scale.set(s, s, 0.1)
         dummy.updateMatrix()
         honey.setMatrixAt(i, dummy.matrix)
-        color.setRGB(...palette.c).lerp(new THREE.Color(0xffc056), 0.5 + spec * 0.2)
+        color.copy(accent).lerp(new THREE.Color(1, 0.72, 0.28), 0.7 - spec * 0.35)
         honey.setColorAt(i, color)
+        dummy.position.copy(cell.pos).addScaledVector(cell.normal, 0.29)
+        const ringOn = cell.neon > 0 ? cell.radius * (0.96 + spec * 0.1) : 0.001
+        dummy.scale.set(ringOn, ringOn, 1)
+        dummy.updateMatrix()
+        neonRings.setMatrixAt(i, dummy.matrix)
+        const pulse = cell.neon > 0 ? cell.neon * (0.35 + spec * 1.1 + m.treble * 0.5 + flash * 0.8) : 0
+        const twinkle = 0.7 + Math.sin(time * 5.3 + cell.tint * 40) * 0.3
+        color.copy(cell.tint > 0.5 ? neon : accent).multiplyScalar(pulse * twinkle)
+        neonRings.setColorAt(i, color)
       }
       comb.instanceMatrix.needsUpdate = true
       honey.instanceMatrix.needsUpdate = true
+      neonRings.instanceMatrix.needsUpdate = true
       if (comb.instanceColor) comb.instanceColor.needsUpdate = true
       if (honey.instanceColor) honey.instanceColor.needsUpdate = true
+      if (neonRings.instanceColor) neonRings.instanceColor.needsUpdate = true
 
-      const flight = time
+      if (core) {
+        const coreMat = core.material as THREE.MeshBasicMaterial
+        coreMat.color.copy(neon).multiplyScalar(1.1 + m.bass * 1.6 + flash * 1.2)
+      }
+      if (coreLight) {
+        coreLight.color.copy(neon)
+        coreLight.intensity = 4 + m.bass * 8 + flash * 6
+      }
+
+      if (haloGroup) {
+        for (let i = 0; i < halos.length; i++) {
+          const h = halos[i]
+          h.mesh.rotation.y += dt * h.rate
+          h.mesh.rotation.x = h.tilt + Math.sin(time * 0.3 + i) * 0.25
+          const s = 1 + m.bass * 0.06 + flash * 0.04
+          h.mesh.scale.setScalar(s)
+          h.mat.color.copy(i % 2 ? accent : neon).multiplyScalar(0.6 + m.mid * 0.8 + flash * 0.6)
+          h.mat.opacity = 0.55 + m.energy * 0.4
+          const radius = R + 1.7 + i * 0.35
+          const b = time * h.beadRate
+          h.bead.position.set(Math.cos(b) * radius, Math.sin(b) * radius, 0)
+          h.bead.scale.setScalar(1 + m.treble * 0.8 + flash * 0.6)
+          ;(h.bead.material as THREE.MeshBasicMaterial).color.copy(i % 2 ? accent : neon).multiplyScalar(2.2)
+        }
+      }
+
+      if (pollen) {
+        pollen.rotation.y += dt * 0.12
+        pollen.rotation.x = Math.sin(time * 0.11) * 0.3
+        const pm = pollen.material as THREE.PointsMaterial
+        pm.color.copy(accent).lerp(new THREE.Color(1, 0.8, 0.4), 0.35)
+        pm.size = 0.05 + m.treble * 0.05 + flash * 0.03
+        pm.opacity = 0.55 + m.energy * 0.4
+      }
+
+      sampleAcc += dt / speed
+      const shift = sampleAcc >= 1 / 45
+      if (shift) sampleAcc = 0
       const flap = time * (38 + speed * 10)
+      const camPos = cameraRef.position
       for (let i = 0; i < bees.length; i++) {
         const bee = bees[i]
-        const t = flight * bee.pace + bee.phase
-        const x = Math.cos(t) * bee.spread + Math.sin(t * 2.15 + bee.phase) * 0.55
-        const y = bee.lift + Math.sin(t * 1.65) * 1.15 + Math.sin(t * 4.4 + i) * 0.18
-        const z = 1.55 + Math.sin(t * 0.92 + bee.phase) * 1.25 + Math.cos(t * 1.8) * 0.35
-        const t2 = t + 0.08
-        look.set(
-          Math.cos(t2) * bee.spread + Math.sin(t2 * 2.15 + bee.phase) * 0.55,
-          bee.lift + Math.sin(t2 * 1.65) * 1.15,
-          1.55 + Math.sin(t2 * 0.92 + bee.phase) * 1.25,
-        )
-        bee.root.position.set(x, y, z)
+        const t = time * bee.pace + bee.phase
+        beePos(bee, t, tmp)
+        beePos(bee, t + 0.05, look)
+        bee.root.position.copy(tmp)
         bee.root.lookAt(look)
         bee.left.rotation.x = Math.sin(flap + i) * 0.72
         bee.right.rotation.x = -Math.sin(flap + i + 0.4) * 0.72
+        const beeCol = bee.accent ? accent : neon
+        bee.glowMat.emissive.copy(beeCol)
+        bee.glowMat.emissiveIntensity = 1.4 + m.energy * 1.6 + flash * 1.2
+
+        const hist = bee.history
+        if (shift) {
+          for (let k = TRAIL - 1; k > 0; k--) {
+            hist[k * 3] = hist[(k - 1) * 3]
+            hist[k * 3 + 1] = hist[(k - 1) * 3 + 1]
+            hist[k * 3 + 2] = hist[(k - 1) * 3 + 2]
+          }
+        }
+        hist[0] = tmp.x
+        hist[1] = tmp.y
+        hist[2] = tmp.z
+        const geo = bee.trail.geometry
+        const pos = geo.getAttribute('position') as THREE.BufferAttribute
+        const col = geo.getAttribute('color') as THREE.BufferAttribute
+        const glow = 0.55 + m.energy * 0.8 + flash * 0.6
+        for (let k = 0; k < TRAIL; k++) {
+          const px = hist[k * 3]
+          const py = hist[k * 3 + 1]
+          const pz = hist[k * 3 + 2]
+          const kp = Math.max(0, k - 1)
+          const kn = Math.min(TRAIL - 1, k + 1)
+          tmp2.set(hist[kp * 3] - hist[kn * 3], hist[kp * 3 + 1] - hist[kn * 3 + 1], hist[kp * 3 + 2] - hist[kn * 3 + 2])
+          look.set(camPos.x - px, camPos.y - py, camPos.z - pz)
+          side.crossVectors(tmp2, look)
+          const len = side.length()
+          if (len < 1e-6) side.set(0, 1, 0)
+          else side.multiplyScalar(1 / len)
+          const fade = 1 - k / (TRAIL - 1)
+          const width = 0.03 + fade * 0.065
+          pos.setXYZ(k * 2, px + side.x * width, py + side.y * width, pz + side.z * width)
+          pos.setXYZ(k * 2 + 1, px - side.x * width, py - side.y * width, pz - side.z * width)
+          const a = fade * fade * glow
+          col.setXYZ(k * 2, beeCol.r * a, beeCol.g * a, beeCol.b * a)
+          col.setXYZ(k * 2 + 1, beeCol.r * a, beeCol.g * a, beeCol.b * a)
+        }
+        pos.needsUpdate = true
+        col.needsUpdate = true
       }
-      group.rotation.y = Math.sin(time * 0.07) * 0.05
+
+      const orbit = time * 0.21
+      const camR = 10.8 + Math.sin(time * 0.17) * 0.6
+      cameraRef.position.set(Math.cos(orbit) * camR, 1.1 + Math.sin(orbit * 0.43) * 2.1, Math.sin(orbit) * camR)
+      cameraRef.lookAt(0, 0, 0)
+      if (keyLight) {
+        keyLight.position.copy(cameraRef.position).multiplyScalar(0.85)
+        keyLight.position.y += 2.5
+        keyLight.color.setRGB(1, 0.78, 0.45).lerp(neon, 0.2)
+        keyLight.intensity = 24 + m.energy * 8
+      }
+      group.rotation.y += dt * 0.03
     },
     dispose(scene) {
       if (group) {
@@ -2266,6 +2851,14 @@ export function createHive(): VisualStyle {
       group = null
       comb = null
       honey = null
+      neonRings = null
+      core = null
+      pollen = null
+      cameraRef = null
+      keyLight = null
+      coreLight = null
+      haloGroup = null
+      halos.length = 0
       cells.length = 0
       bees.length = 0
     },
@@ -2282,12 +2875,13 @@ export function createVoid(): VisualStyle {
   let sMid = 0
   let sTreble = 0
   let sEnergy = 0
+  let flare = 0
 
   return {
     id: 'void',
     label: 'Void',
-    hint: 'Black hole singularity',
-    bloom: { base: 0.26, pulse: 0.05 },
+    hint: 'Black hole in deep space',
+    bloom: { base: 0.3, pulse: 0.18 },
     holeMask: { radius: 0.154, feather: 0.005 },
     mount(scene, camera) {
       camera.position.set(0, 0, 1)
@@ -2303,6 +2897,7 @@ export function createVoid(): VisualStyle {
           uMid: { value: 0 },
           uTreble: { value: 0 },
           uEnergy: { value: 0 },
+          uFlare: { value: 0 },
           uSeed: { value: 0 },
           uRes: { value: new THREE.Vector2(1, 1) },
           uA: { value: uA },
@@ -2317,14 +2912,14 @@ export function createVoid(): VisualStyle {
           }
         `,
         fragmentShader: `
-          uniform float uTime, uBass, uMid, uTreble, uEnergy, uSeed;
+          uniform float uTime, uBass, uMid, uTreble, uEnergy, uFlare, uSeed;
           uniform vec2 uRes;
           uniform vec3 uA, uB, uC;
           varying vec2 vUv;
 
           const float RS = 1.0;
           const float ISCO = 3.05;
-          const float DISK_OUT = 13.6;
+          const float DISK_OUT = 14.5;
 
           float hash(vec2 p) {
             return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -2332,6 +2927,33 @@ export function createVoid(): VisualStyle {
 
           float hash13(vec3 p) {
             return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          }
+
+          float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }
+
+          float fbm(vec2 p) {
+            float v = 0.0;
+            float amp = 0.5;
+            for (int i = 0; i < 4; i++) {
+              v += amp * noise(p);
+              p = p * 2.07 + vec2(1.7, 9.2);
+              amp *= 0.5;
+            }
+            return v;
+          }
+
+          vec3 tone(vec3 c, float target) {
+            float luma = dot(c, vec3(0.299, 0.587, 0.114));
+            return c * (target / max(luma, 0.05));
           }
 
           vec3 blackbody(float t) {
@@ -2347,114 +2969,55 @@ export function createVoid(): VisualStyle {
           vec3 shadeDisk(vec3 hit, vec3 vel) {
             float r = length(hit);
             float xr = ISCO / max(r, ISCO);
-            float temp = pow(ISCO / max(r, ISCO), 0.75) * pow(max(0.001, 1.0 - sqrt(xr)), 0.25);
+            float temp = pow(xr, 0.75) * pow(max(0.001, 1.0 - sqrt(xr)), 0.25);
             temp *= sqrt(max(0.05, 1.0 - RS / max(r, RS * 1.02)));
             float phi = atan(hit.z, hit.x);
-            float omega = 1.55 * pow(ISCO / max(r, 0.9), 1.55) + 0.7;
-            float kepler = phi - uTime * omega;
-            float turb = 0.48 + 0.52 * sin(kepler * 5.0 + r * 1.6);
-            turb *= 0.58 + 0.42 * sin(kepler * 2.2 - r * 0.85);
-            turb *= 0.72 + 0.28 * sin(kepler * 9.0 - r * 3.2);
-            turb = mix(0.7, turb, 0.8 + uMid * 0.1);
-            float dens = smoothstep(ISCO, ISCO + 0.42, r) * smoothstep(DISK_OUT, DISK_OUT - 3.2, r);
-            dens *= 0.55 + turb * 0.7;
+            float omega = 1.35 * pow(ISCO / max(r, 0.9), 1.5) + 0.45;
+            float kep = phi - uTime * omega;
+            vec2 q = vec2(cos(kep), sin(kep)) * 2.4 + vec2(log(r) * 5.2, uSeed * 0.01);
+            float f1 = fbm(q);
+            float f2 = fbm(q * vec2(2.4, 1.6) + 7.3 - vec2(uTime * 0.12, 0.0));
+            float streak = 0.55 + 0.45 * sin(kep * 7.0 + f1 * 6.0 + r * 0.8);
+            float turb = mix(0.5, 1.05, f1) * (0.6 + 0.4 * f2) * (0.7 + 0.3 * streak);
+            float flutter = 1.0 + (0.06 + uTreble * 0.3) * sin(uTime * 9.0 + phi * 4.0 + r * 3.0 + f2 * 8.0);
+            float dens = smoothstep(ISCO, ISCO + 0.55, r) * smoothstep(DISK_OUT, DISK_OUT - 4.5, r);
+            dens *= turb * flutter;
             float orbSpeed = sqrt(0.5 * RS / max(r, ISCO));
             vec3 orbDir = normalize(vec3(-hit.z, 0.0, hit.x));
-            float dop = max(0.22, 1.0 + 1.65 * dot(normalize(vel), orbDir) * orbSpeed);
+            float dop = max(0.22, 1.0 + 1.55 * dot(normalize(vel), orbDir) * orbSpeed);
             float boost = dop * dop * dop;
-            float colorTemp = temp * pow(dop, 1.35) * (1.05 + uEnergy * 0.12);
+            float colorTemp = temp * pow(dop, 1.3) * (1.0 + uEnergy * 0.35 + uFlare * 0.25);
             vec3 col = blackbody(colorTemp);
-            vec3 outer = mix(uB, uA, 0.45);
-            col = mix(col, mix(col, outer, 0.35), smoothstep(5.5, 11.5, r));
-            col = mix(col * vec3(1.18, 0.42, 0.16), col, clamp(dop * 0.55, 0.0, 1.0));
-            return col * dens * boost * (0.95 + uBass * 0.1);
+            vec3 tint = tone(mix(uA, uC, smoothstep(4.0, 11.0, r)), 0.6);
+            float tintAmt = clamp(0.2 + uEnergy * 0.42 + uMid * 0.2, 0.0, 0.85);
+            col = mix(col, col * (0.4 + tint * 1.5), tintAmt);
+            col = mix(col * vec3(1.15, 0.45, 0.2), col, clamp(dop * 0.55, 0.0, 1.0));
+            return col * dens * boost * (0.85 + uBass * 0.45 + uFlare * 0.6);
           }
 
-          vec3 starTint(vec2 id) {
-            float h = hash(id + uSeed);
-            float h2 = hash(id + 9.7);
-            return mix(mix(uA, uB, h), uC, h2 * 0.65);
-          }
-
-          vec3 vortexLayer(float rad, float ang, float t, float lanes, float rings, float amp) {
-            float edge = pow(clamp((0.62 - rad) / 0.48, 0.0, 1.0), 1.35);
-            float spin = ang + t * (0.38 + 2.8 * edge) + 0.42 * log(max(rad, 0.04));
-            float fall = rad * rings + t * (1.15 + 1.8 * edge);
-            vec2 id = floor(vec2(spin * lanes / 6.2831853, fall));
-            vec2 f = fract(vec2(spin * lanes / 6.2831853, fall));
-            float n = hash(id + uSeed * 0.13);
-            if (n < 0.58) return vec3(0.0);
-            vec2 c = f - 0.5;
-            float pix = 1.0 - smoothstep(0.1, 0.2, max(abs(c.x), abs(c.y)));
-            float fade = smoothstep(0.055, 0.13, rad) * smoothstep(1.42, 0.42, rad);
-            return starTint(id) * pix * amp * fade * (0.45 + n * 0.8);
-          }
-
-          vec3 sky(vec3 dir, vec2 uv) {
+          vec3 sky(vec3 dir) {
             vec3 d = normalize(dir);
-            float a = uTime * 0.48;
+            float a = uTime * 0.02;
             float ca = cos(a);
             float sa = sin(a);
             d = vec3(ca * d.x + sa * d.z, d.y, -sa * d.x + ca * d.z);
 
-            vec3 cell = floor(d * 68.0);
+            vec3 g = d * 90.0;
+            vec3 cell = floor(g);
+            vec3 f = fract(g) - 0.5;
             float n = hash13(cell + vec3(uSeed * 0.002));
-            vec3 acc = vec3(0.012, 0.014, 0.03);
-            acc += starTint(cell.xy) * pow(n, 20.0) * (1.2 + uTreble * 0.22);
-            acc += mix(uB, uC, 0.4) * pow(hash13(floor(d * 7.0 + 2.4)), 2.0) * 0.12;
+            float pt = exp(-dot(f, f) * 26.0);
+            vec3 starCol = mix(vec3(0.82, 0.86, 1.0), mix(uA, uC, hash13(cell + 2.0)), 0.35);
+            vec3 stars = starCol * pow(n, 24.0) * pt * 3.2 * (1.0 + uTreble * 0.35);
 
-            float r = length(uv);
-            float warp = 0.024 / max(r * r, 0.0035);
-            vec2 luv = uv * (1.0 - clamp(warp, 0.0, 0.68));
-            float rad = length(luv);
-            float ang = atan(luv.y, luv.x);
-            acc += vortexLayer(rad, ang, uTime, 34.0, 18.0, 0.95);
-            acc += vortexLayer(rad, ang, uTime * 0.62 + 1.7, 21.0, 12.0, 0.62);
-            acc += vortexLayer(rad, ang + 0.4, uTime * 0.4 + 3.1, 13.0, 8.0, 0.4);
-
-            vec3 s0 = normalize(vec3(0.82, 0.22, 0.48));
-            vec3 s1 = normalize(vec3(-0.64, 0.12, 0.72));
-            vec3 s2 = normalize(vec3(0.18, -0.28, -0.88));
-            vec3 s3 = normalize(vec3(-0.42, 0.36, -0.62));
-            float k0 = 1.0 - dot(d, s0);
-            float k1 = 1.0 - dot(d, s1);
-            float k2 = 1.0 - dot(d, s2);
-            float k3 = 1.0 - dot(d, s3);
-            acc += mix(uA, vec3(1.0, 0.86, 0.58), 0.45) * (exp(-k0 * 920.0) * 2.1 + exp(-k0 * 58.0) * 0.22);
-            acc += mix(uB, vec3(0.72, 0.84, 1.0), 0.4) * (exp(-k1 * 780.0) * 1.6 + exp(-k1 * 48.0) * 0.18);
-            acc += mix(uC, vec3(1.0, 0.7, 0.4), 0.4) * (exp(-k2 * 700.0) * 1.35 + exp(-k2 * 40.0) * 0.16);
-            acc += mix(uA, uC, 0.5) * (exp(-k3 * 640.0) * 1.2 + exp(-k3 * 36.0) * 0.14);
-            return acc;
-          }
-
-          void lightState(float id, out vec3 p, out vec3 col, out float fade) {
-            float phase = hash(vec2(id * 17.3 + uSeed, 8.1));
-            float life = fract(phase - uTime * (0.022 + id * 0.003));
-            float fall = pow(life, 0.6);
-            float r = mix(RS * 1.14, 24.0, fall);
-            float omega = 0.7 + 3.6 * pow(3.05 / max(r, 1.2), 1.45);
-            float phi = phase * 6.2831853 + id * 0.95 + uTime * omega;
-            float inc = (hash(vec2(id, uSeed + 3.3)) - 0.5) * 1.35;
-            p = vec3(cos(phi) * r, inc * (0.28 + 0.72 * fall), sin(phi) * r);
-            float g = sqrt(max(0.05, 1.0 - RS / max(r, RS * 1.02)));
-            fade = smoothstep(0.0, 0.09, life) * smoothstep(RS * 1.05, RS * 1.28, r) * g;
-            vec3 warm = vec3(1.0, 0.8, 0.48);
-            vec3 cool = vec3(0.62, 0.8, 1.0);
-            col = mix(mix(uA, uC, fract(phase * 2.7)), mix(warm, cool, fract(phase * 4.1)), 0.58);
-            col *= mix(0.55, 1.35, life);
-          }
-
-          float approach(vec3 a, vec3 b, vec3 L) {
-            vec3 w = b - a;
-            vec3 v = a - L;
-            float t = clamp(-dot(v, w) / max(dot(w, w), 1e-5), 0.0, 1.0);
-            vec3 d = a + w * t - L;
-            return dot(d, d);
-          }
-
-          vec3 lightFromDist(float d2, vec3 col, float fade) {
-            if (fade < 0.012) return vec3(0.0);
-            return col * fade * (1.05 * exp(-d2 * 10.5) + 0.22 * exp(-d2 * 2.2) + 0.06 / (d2 + 0.05));
+            vec2 p = vec2(d.x + d.z * 0.7, d.y + d.z * 0.4) * 2.4;
+            float n1 = fbm(p * 1.3 + uSeed * 0.01);
+            float n2 = fbm(p * 2.7 + 4.0 - uTime * 0.01);
+            float band = exp(-pow((d.y + 0.15 + 0.2 * sin(d.x * 1.5)) * 3.2, 2.0));
+            vec3 dust = mix(tone(uB, 0.3), tone(uA, 0.3), n1) * pow(n1, 1.8) * 0.3;
+            dust += tone(uC, 0.3) * pow(n2, 2.5) * 0.2;
+            dust *= (0.6 + band * 0.9) * (0.8 + uEnergy * 0.55);
+            return vec3(0.004, 0.005, 0.012) + dust + stars;
           }
 
           void main() {
@@ -2471,26 +3034,10 @@ export function createVoid(): VisualStyle {
             float L2 = dot(Lvec, Lvec);
             float gravCoeff = -1.5 * RS * L2;
 
-            vec3 lp0; vec3 lp1; vec3 lp2; vec3 lp3; vec3 lp4; vec3 lp5;
-            vec3 lc0; vec3 lc1; vec3 lc2; vec3 lc3; vec3 lc4; vec3 lc5;
-            float lf0; float lf1; float lf2; float lf3; float lf4; float lf5;
-            lightState(0.0, lp0, lc0, lf0);
-            lightState(1.0, lp1, lc1, lf1);
-            lightState(2.0, lp2, lc2, lf2);
-            lightState(3.0, lp3, lc3, lf3);
-            lightState(4.0, lp4, lc4, lf4);
-            lightState(5.0, lp5, lc5, lf5);
-
             vec3 diskCol = vec3(0.0);
             float diskA = 0.0;
             bool absorbed = false;
             int crossings = 0;
-            float d0 = 80.0;
-            float d1 = 80.0;
-            float d2 = 80.0;
-            float d3 = 80.0;
-            float d4 = 80.0;
-            float d5 = 80.0;
 
             for (int i = 0; i < 72; i++) {
               float r = length(pos);
@@ -2522,50 +3069,29 @@ export function createVoid(): VisualStyle {
                 }
               }
 
-              if (r < 24.0) {
-                d0 = min(d0, approach(pos, p1, lp0));
-                d1 = min(d1, approach(pos, p1, lp1));
-                d2 = min(d2, approach(pos, p1, lp2));
-                d3 = min(d3, approach(pos, p1, lp3));
-                d4 = min(d4, approach(pos, p1, lp4));
-                d5 = min(d5, approach(pos, p1, lp5));
-              }
-
               pos = p1;
               vel = v1;
             }
 
-            vec3 lights = lightFromDist(d0, lc0, lf0);
-            lights += lightFromDist(d1, lc1, lf1);
-            lights += lightFromDist(d2, lc2, lf2);
-            lights += lightFromDist(d3, lc3, lf3);
-            lights += lightFromDist(d4, lc4, lf4);
-            lights += lightFromDist(d5, lc5, lf5);
-
-            float impact = sqrt(max(L2, 0.0));
-            float caustic = 1.0 + 1.15 * exp(-pow((impact - 2.598) * 1.7, 2.0));
-
             float rad = length(uv);
             float ang = atan(uv.y, uv.x);
             float hole = smoothstep(0.154, 0.149, rad);
-            float rim = smoothstep(0.154, 0.168, rad) * smoothstep(0.4, 0.188, rad);
-            float edge = pow(clamp((0.36 - rad) / 0.2, 0.0, 1.0), 1.2);
-            float spin = ang - uTime * mix(0.85, 4.4, edge);
-            float flow = 0.48 + 0.52 * sin(spin * 6.0 + rad * 16.0);
-            flow *= 0.6 + 0.4 * sin(spin * 3.0 - rad * 7.0);
-            float clump = pow(0.5 + 0.5 * sin(ang * 2.0 - uTime * mix(0.5, 2.4, edge)), 2.4);
-            vec3 glowCol = mix(mix(uA, uC, 0.35), vec3(1.0, 0.58, 0.16), 0.72);
-            vec3 rimGlow = glowCol * rim * (0.2 + flow * 0.7 + clump * 0.4) * (0.95 + uEnergy * 0.12);
+            float rim = smoothstep(0.152, 0.164, rad) * smoothstep(0.36, 0.17, rad);
+            float shimmer = fbm(vec2(cos(ang + uTime * 0.3), sin(ang + uTime * 0.3)) * 2.2 + rad * 22.0 - uTime * 0.9);
+            vec3 warm = vec3(1.0, 0.62, 0.22);
+            vec3 rimCol = mix(warm, tone(uA, 0.7), clamp(0.25 + uEnergy * 0.45, 0.0, 0.8));
+            vec3 rimGlow = rimCol * rim * (0.3 + shimmer * 0.7) * (0.6 + uEnergy * 0.55 + uFlare * 0.45);
+            float haze = exp(-rad * 4.2) * (0.05 + uEnergy * 0.06);
+            vec3 hazeCol = mix(warm, tone(uC, 0.6), 0.4) * haze;
 
             vec3 col = vec3(0.0);
-            if (!absorbed && hole < 0.001) col += sky(vel, uv);
-            col += lights * caustic * (1.0 - hole);
-            col += diskCol * (1.02 + uEnergy * 0.14) * (1.0 - hole);
-            col += rimGlow * (1.0 - hole);
+            if (!absorbed && hole < 0.001) col += sky(vel);
+            col += diskCol * (1.0 + uEnergy * 0.2) * (1.0 - hole);
+            col += (rimGlow + hazeCol) * (1.0 - hole);
             col = mix(col, vec3(0.0), hole);
 
             float vig = smoothstep(1.45, 0.28, length(uv * vec2(0.82, 1.0)));
-            gl_FragColor = vec4(col * vig, 1.0);
+            gl_FragColor = vec4(min(col * vig, vec3(1.6)), 1.0);
           }
         `,
       })
@@ -2577,15 +3103,17 @@ export function createVoid(): VisualStyle {
     },
     update(m, time, _dt, palette) {
       if (!material) return
-      sBass += (m.bass - sBass) * 0.04
-      sMid += (m.mid - sMid) * 0.035
-      sTreble += (m.treble - sTreble) * 0.035
-      sEnergy += (m.energy - sEnergy) * 0.035
+      sBass += (m.bass - sBass) * 0.09
+      sMid += (m.mid - sMid) * 0.06
+      sTreble += (m.treble - sTreble) * 0.16
+      sEnergy += (m.energy - sEnergy) * 0.06
+      flare = m.beat ? Math.max(flare, 1) : flare * 0.9
       material.uniforms.uTime.value = time
       material.uniforms.uBass.value = sBass
       material.uniforms.uMid.value = sMid
       material.uniforms.uTreble.value = sTreble
       material.uniforms.uEnergy.value = sEnergy
+      material.uniforms.uFlare.value = flare
       material.uniforms.uSeed.value = palette.seed
       colorFrom(palette.a, uA)
       colorFrom(palette.b, uB)
@@ -2606,18 +3134,114 @@ export function createVoid(): VisualStyle {
   }
 }
 
+type TideFish = {
+  group: THREE.Group
+  body: THREE.Group
+  mat: THREE.ShaderMaterial
+  tint: number
+  length: number
+  peak: number
+  wiggle: number
+}
+
+type TideJump = {
+  fish: TideFish
+  start: number
+  dur: number
+  x0: number
+  z0: number
+  dx: number
+  dz: number
+  ySub: number
+  entryDone: boolean
+  exitDone: boolean
+}
+
+type TideSplash = {
+  ring: THREE.Mesh
+  spray: THREE.Points
+  age: number
+  life: number
+  x: number
+  z: number
+  active: boolean
+}
+
 export function createTide(): VisualStyle {
   let group: THREE.Group | null = null
   let oceanMat: THREE.ShaderMaterial | null = null
+  let skyMat: THREE.ShaderMaterial | null = null
   let moonMat: THREE.MeshBasicMaterial | null = null
+  let fishLight: THREE.PointLight | null = null
+  let horizonMats: THREE.MeshBasicMaterial[] = []
+  let planktonA: THREE.Points | null = null
+  let planktonB: THREE.Points | null = null
+  const fishes: TideFish[] = []
+  const splashes: TideSplash[] = []
+  let jump: TideJump | null = null
+  let jumpIndex = 0
+  let jumpTimer = 7
+  let clock = 0
+  let pulseAge = 10
+  let lastBass = 0
+  let rngNext = () => Math.random()
+  const JUMP_INTERVAL = 10
   const uA = new THREE.Color()
   const uC = new THREE.Color()
+
+  const waveY = (wx: number, wz: number, t: number, bass: number) => {
+    const px = wx
+    const pz = wz + 22
+    const a1 = 0.62 + bass * 0.28
+    const a2 = 0.36 + bass * 0.12
+    const a3 = 0.14
+    return (
+      a1 * Math.sin(px * 0.21 + pz * 0.33 - t * 1.15) +
+      a2 * Math.sin(px * 0.4 - pz * 0.19 - t * 1.65) +
+      a3 * Math.sin(px * 0.78 + pz * 0.52 - t * 2.25)
+    )
+  }
+
+  const startJump = () => {
+    if (fishes.length === 0) return
+    const fish = fishes[jumpIndex % fishes.length]
+    jumpIndex += 1
+    const dir = rngNext() > 0.5 ? 1 : -1
+    const x0 = (rngNext() - 0.5) * 8 - dir * 7
+    const z0 = -6 - rngNext() * 8
+    jump = {
+      fish,
+      start: clock,
+      dur: 3.4 + fish.length * 0.22,
+      x0,
+      z0,
+      dx: dir * (10 + rngNext() * 5),
+      dz: (rngNext() - 0.5) * 4,
+      ySub: -fish.length * 0.55,
+      entryDone: false,
+      exitDone: false,
+    }
+    fish.group.visible = true
+  }
+
+  const fireSplash = (x: number, z: number, size: number) => {
+    const s = splashes.find((sp) => !sp.active) ?? splashes[0]
+    if (!s) return
+    s.active = true
+    s.age = 0
+    s.life = 1.1 + size * 0.12
+    s.x = x
+    s.z = z
+    s.ring.visible = true
+    s.spray.visible = true
+    s.ring.scale.setScalar(0.2 * size)
+  }
 
   return {
     id: 'tide',
     label: 'Tide',
-    hint: 'Bioluminescent night tide',
-    bloom: { base: 0.2, pulse: 0.05 },
+    hint: 'Neon tide with leaping fish',
+    bloom: { base: 0.3, pulse: 0.16 },
     mount(scene, camera, palette) {
       camera.fov = 62
       camera.near = 0.1
@@ -2630,14 +3254,22 @@ export function createTide(): VisualStyle {
 
       group = new THREE.Group()
       const rng = styleRng(palette.seed)
+      rngNext = () => rng.next()
+      clock = 0
+      jumpTimer = 7
+      jumpIndex = 0
+      jump = null
+      pulseAge = 10
 
-      const skyMat = new THREE.ShaderMaterial({
+      skyMat = new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
         fog: false,
         uniforms: {
           uTop: { value: new THREE.Color(0x03060d) },
           uHorizon: { value: new THREE.Color(0x0a1824) },
+          uNeon: { value: new THREE.Color(0x2affc8) },
+          uGlow: { value: 0.3 },
         },
         vertexShader: `
           varying float vH;
@@ -2647,11 +3279,13 @@ export function createTide(): VisualStyle {
           }
         `,
         fragmentShader: `
-          uniform vec3 uTop, uHorizon;
+          uniform vec3 uTop, uHorizon, uNeon;
+          uniform float uGlow;
           varying float vH;
           void main() {
             float h = clamp(vH * 1.1 + 0.05, 0.0, 1.0);
             vec3 col = mix(uHorizon, uTop, smoothstep(0.02, 0.72, h));
+            col += uNeon * exp(-max(vH, 0.0) * 14.0) * uGlow;
             gl_FragColor = vec4(col, 1.0);
           }
         `,
@@ -2707,6 +3341,9 @@ export function createTide(): VisualStyle {
           uTime: { value: 0 },
           uBass: { value: 0 },
           uEnergy: { value: 0 },
+          uTreble: { value: 0 },
+          uPulse: { value: 0 },
+          uPulseR: { value: 0 },
           uA: { value: uA },
           uC: { value: uC },
           uMoon: { value: moon.position.clone() },
@@ -2745,12 +3382,17 @@ export function createTide(): VisualStyle {
           }
         `,
         fragmentShader: `
-          uniform float uEnergy;
+          uniform float uTime, uEnergy, uTreble, uPulse, uPulseR;
           uniform vec3 uA, uC, uMoon, uFogColor;
           varying vec3 vWorld;
           varying vec3 vNormal;
           varying float vCrest;
           varying float vDist;
+
+          vec3 lift(vec3 c, float target) {
+            float luma = dot(c, vec3(0.299, 0.587, 0.114));
+            return c * (target / max(luma, 0.05));
+          }
 
           void main() {
             vec3 n = normalize(vNormal);
@@ -2759,15 +3401,23 @@ export function createTide(): VisualStyle {
             float fres = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 3.2);
             float spec = pow(max(dot(n, normalize(moonDir + view)), 0.0), 42.0);
             float crest = smoothstep(0.42, 0.88, vCrest);
-            vec3 bio = mix(vec3(0.06, 0.72, 0.68), mix(uA, uC, 0.5), 0.48);
+            vec3 neonA = lift(uA, 0.5);
+            vec3 neonC = lift(uC, 0.5);
+            vec3 bio = mix(vec3(0.06, 0.72, 0.68), mix(neonA, neonC, 0.5), 0.55);
             vec3 deep = vec3(0.012, 0.035, 0.05);
-            vec3 col = mix(deep, bio, crest * (0.42 + uEnergy * 0.38));
-            col += bio * pow(max(vCrest, 0.0), 3.4) * (0.18 + uEnergy * 0.16);
-            col += vec3(0.7, 0.84, 1.0) * spec * 0.28;
-            col += vec3(0.12, 0.2, 0.28) * fres * 0.35;
+            vec3 col = mix(deep, bio, crest * (0.3 + uEnergy * 0.5));
+            col += bio * pow(max(vCrest, 0.0), 3.4) * (0.14 + uEnergy * 0.3);
+            float streak = pow(0.5 + 0.5 * sin(vWorld.x * 1.3 + vWorld.z * 0.7 + uTime * 2.1), 9.0);
+            streak *= pow(0.5 + 0.5 * sin(vWorld.x * 0.45 - vWorld.z * 1.1 - uTime * 1.4), 3.0);
+            col += neonC * streak * crest * (0.5 + uTreble * 0.9);
+            float ringD = abs(length(vWorld.xz - vec2(0.0, -20.0)) - uPulseR);
+            float ring = exp(-ringD * 0.42) * uPulse;
+            col += mix(neonA, neonC, 0.5) * ring * 0.85;
+            col += mix(vec3(0.7, 0.84, 1.0), neonA, 0.25) * spec * 0.3;
+            col += mix(vec3(0.12, 0.2, 0.28), neonA, 0.3) * fres * 0.3;
             float fog = smoothstep(34.0, 98.0, vDist);
             col = mix(col, uFogColor, fog);
-            gl_FragColor = vec4(min(col, vec3(0.7)), 1.0);
+            gl_FragColor = vec4(min(col, vec3(0.92)), 1.0);
           }
         `,
       })
@@ -2775,18 +3425,395 @@ export function createTide(): VisualStyle {
       ocean.position.set(0, 0, -22)
       group.add(ocean)
 
+      horizonMats = []
+      const horizonLine = new THREE.Mesh(
+        new THREE.BoxGeometry(220, 0.09, 0.12),
+        new THREE.MeshBasicMaterial({ color: 0x2affc8, fog: false }),
+      )
+      horizonLine.position.set(0, 0.55, -96)
+      horizonMats.push(horizonLine.material as THREE.MeshBasicMaterial)
+      group.add(horizonLine)
+
+      const makePlankton = (count: number, color: number, size: number) => {
+        const pos = new Float32Array(count * 3)
+        for (let i = 0; i < count; i++) {
+          pos[i * 3] = (rng.next() - 0.5) * 80
+          pos[i * 3 + 1] = 0.3 + Math.pow(rng.next(), 2.2) * 3.2
+          pos[i * 3 + 2] = 8 - rng.next() * 70
+        }
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+        return new THREE.Points(
+          geo,
+          new THREE.PointsMaterial({
+            color,
+            size,
+            sizeAttenuation: true,
+            transparent: true,
+            opacity: 0.75,
+            depthWrite: false,
+            fog: true,
+          }),
+        )
+      }
+      planktonA = makePlankton(420, 0x2affc8, 0.11)
+      planktonB = makePlankton(260, 0xff4fd8, 0.08)
+      group.add(planktonA, planktonB)
+
+      const makeFishMat = () =>
+        new THREE.ShaderMaterial({
+          side: THREE.DoubleSide,
+          uniforms: {
+            uNeon: { value: new THREE.Color(0x2affc8) },
+            uGlow: { value: 0 },
+          },
+          vertexShader: `
+            varying vec3 vW;
+            varying vec3 vN;
+            void main() {
+              vec4 w = modelMatrix * vec4(position, 1.0);
+              vW = w.xyz;
+              vN = normalize(mat3(modelMatrix) * normal);
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform vec3 uNeon;
+            uniform float uGlow;
+            varying vec3 vW;
+            varying vec3 vN;
+            void main() {
+              vec3 n = normalize(vN);
+              vec3 v = normalize(cameraPosition - vW);
+              float fres = pow(1.0 - abs(dot(n, v)), 1.6);
+              float up = max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0);
+              vec3 moonDir = normalize(vec3(0.35, 0.6, -0.7));
+              float spec = pow(max(dot(n, normalize(moonDir + v)), 0.0), 30.0);
+              vec3 dark = vec3(0.03, 0.07, 0.1);
+              vec3 col = dark * (0.5 + up * 0.9);
+              col += uNeon * fres * (1.7 + uGlow * 1.0);
+              col += uNeon * (0.22 + uGlow * 0.2);
+              col += vec3(0.7, 0.82, 1.0) * spec * 0.5;
+              gl_FragColor = vec4(min(col, vec3(1.0)), 1.0);
+            }
+          `,
+        })
+
+      const lathe = (pts: [number, number][], seg = 22) => {
+        const g = new THREE.LatheGeometry(
+          pts.map(([r, y]) => new THREE.Vector2(r, y)),
+          seg,
+        )
+        g.rotateX(Math.PI / 2)
+        return g
+      }
+      const shape = (pts: [number, number][]) => {
+        const s = new THREE.Shape()
+        s.moveTo(pts[0][0], pts[0][1])
+        for (let i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1])
+        s.closePath()
+        return new THREE.ShapeGeometry(s)
+      }
+      // Fins drawn in (length, height) space: +x toward nose, +y up. Mapped to the Z axis.
+      const sideFin = (pts: [number, number][]) => {
+        const g = shape(pts)
+        g.rotateY(-Math.PI / 2)
+        return g
+      }
+      // Flukes drawn in (width, length) space with +y pointing toward the tail.
+      const flatFin = (pts: [number, number][]) => {
+        const g = shape(pts)
+        g.rotateX(-Math.PI / 2)
+        return g
+      }
+
+      const buildFish = (
+        tint: number,
+        length: number,
+        peak: number,
+        wiggle: number,
+        build: (body: THREE.Group, mat: THREE.ShaderMaterial) => void,
+      ) => {
+        const mat = makeFishMat()
+        const g = new THREE.Group()
+        const body = new THREE.Group()
+        build(body, mat)
+        g.add(body)
+        g.visible = false
+        fishes.push({ group: g, body, mat, tint, length, peak, wiggle })
+        group!.add(g)
+      }
+
+      // Shark: torpedo body, tall dorsal, vertical crescent tail.
+      buildFish(0.15, 4.6, 4.6, 0.7, (body, mat) => {
+        body.add(
+          new THREE.Mesh(
+            lathe([
+              [0, -2.3], [0.12, -2.0], [0.3, -1.2], [0.5, -0.3], [0.52, 0.3], [0.42, 1.1], [0.22, 1.9], [0, 2.3],
+            ]),
+            mat,
+          ),
+        )
+        body.add(new THREE.Mesh(sideFin([[0.5, 0.45], [-0.4, 1.55], [-0.75, 0.42]]), mat))
+        body.add(new THREE.Mesh(sideFin([[-1.9, 0.15], [-2.7, 1.15], [-2.35, 0.05], [-2.65, -0.85], [-1.9, -0.1]]), mat))
+        for (const s of [-1, 1]) {
+          const fin = new THREE.Mesh(sideFin([[0.9, 0], [0.05, -1.15], [-0.15, -0.1]]), mat)
+          fin.position.set(s * 0.4, -0.12, 0.3)
+          fin.rotation.z = s * 0.95
+          body.add(fin)
+        }
+      })
+
+      // Whale: heavy body, horizontal flukes, small hump.
+      buildFish(0.5, 7.2, 4.2, 0.35, (body, mat) => {
+        body.add(
+          new THREE.Mesh(
+            lathe([
+              [0, -3.6], [0.2, -3.1], [0.45, -2.1], [0.95, -0.8], [1.12, 0.4], [1.02, 1.7], [0.72, 2.8], [0.3, 3.4], [0, 3.6],
+            ], 26),
+            mat,
+          ),
+        )
+        body.add(new THREE.Mesh(sideFin([[-0.6, 1.0], [-1.25, 1.55], [-1.65, 0.85]]), mat))
+        const fluke = new THREE.Mesh(
+          flatFin([[0, 3.3], [1.9, 4.45], [1.0, 3.7], [0, 3.55], [-1.0, 3.7], [-1.9, 4.45]]),
+          mat,
+        )
+        fluke.position.y = 0.05
+        body.add(fluke)
+        for (const s of [-1, 1]) {
+          const flipper = new THREE.Mesh(sideFin([[0.8, 0], [-0.3, -1.4], [-0.9, -0.2]]), mat)
+          flipper.position.set(s * 0.85, -0.35, 0.9)
+          flipper.rotation.z = s * 1.1
+          body.add(flipper)
+        }
+      })
+
+      // Dolphin: slender, beak, curved dorsal, horizontal flukes, highest jumper.
+      buildFish(0.3, 3.4, 6.4, 1.0, (body, mat) => {
+        body.add(
+          new THREE.Mesh(
+            lathe([
+              [0, -1.7], [0.08, -1.5], [0.22, -0.8], [0.36, 0.0], [0.38, 0.5], [0.3, 1.0], [0.16, 1.4], [0.06, 1.62], [0, 1.72],
+            ]),
+            mat,
+          ),
+        )
+        body.add(new THREE.Mesh(sideFin([[0.35, 0.34], [-0.15, 0.98], [-0.35, 0.85], [-0.5, 0.32]]), mat))
+        body.add(new THREE.Mesh(flatFin([[0, 1.55], [0.95, 2.1], [0.45, 1.75], [0, 1.7], [-0.45, 1.75], [-0.95, 2.1]]), mat))
+        for (const s of [-1, 1]) {
+          const fin = new THREE.Mesh(sideFin([[0.5, 0], [-0.1, -0.7], [-0.35, -0.1]]), mat)
+          fin.position.set(s * 0.3, -0.12, 0.55)
+          fin.rotation.z = s * 1.0
+          body.add(fin)
+        }
+      })
+
+      // Tuna: football body, crescent tail, finlets along the back.
+      buildFish(0.85, 3.0, 4.0, 1.2, (body, mat) => {
+        body.add(
+          new THREE.Mesh(
+            lathe([[0, -1.5], [0.08, -1.3], [0.3, -0.7], [0.5, 0.0], [0.48, 0.6], [0.3, 1.1], [0.1, 1.42], [0, 1.5]]),
+            mat,
+          ),
+        )
+        body.add(new THREE.Mesh(sideFin([[0.45, 0.42], [0.1, 1.05], [-0.15, 0.4]]), mat))
+        body.add(new THREE.Mesh(sideFin([[-1.28, 0.1], [-1.95, 0.95], [-1.62, 0.0], [-1.95, -0.95], [-1.28, -0.1]]), mat))
+        for (let i = 0; i < 4; i++) {
+          const z = -0.35 - i * 0.22
+          body.add(new THREE.Mesh(sideFin([[z + 0.08, 0.36 - i * 0.05], [z, 0.55 - i * 0.05], [z - 0.06, 0.34 - i * 0.05]]), mat))
+        }
+        for (const s of [-1, 1]) {
+          const fin = new THREE.Mesh(sideFin([[0.6, 0], [-0.1, -0.75], [-0.25, -0.05]]), mat)
+          fin.position.set(s * 0.38, -0.05, 0.35)
+          fin.rotation.z = s * 1.05
+          body.add(fin)
+        }
+      })
+
+      // Swordfish: long bill, tall sail dorsal, crescent tail.
+      buildFish(0.65, 4.8, 5.4, 0.8, (body, mat) => {
+        body.add(
+          new THREE.Mesh(
+            lathe([[0, -1.6], [0.08, -1.4], [0.3, -0.6], [0.42, 0.2], [0.36, 0.9], [0.18, 1.5], [0, 1.65]]),
+            mat,
+          ),
+        )
+        const sword = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.07, 1.7, 8), mat)
+        sword.rotation.x = Math.PI / 2
+        sword.position.z = 2.45
+        body.add(sword)
+        body.add(new THREE.Mesh(sideFin([[0.75, 0.36], [0.3, 1.4], [-0.35, 1.05], [-0.95, 0.3]]), mat))
+        body.add(new THREE.Mesh(sideFin([[-1.4, 0.1], [-2.15, 1.05], [-1.78, 0.0], [-2.15, -1.05], [-1.4, -0.1]]), mat))
+        for (const s of [-1, 1]) {
+          const fin = new THREE.Mesh(sideFin([[0.5, 0], [-0.5, -0.9], [-0.55, -0.05]]), mat)
+          fin.position.set(s * 0.32, -0.08, 0.45)
+          fin.rotation.z = s * 1.0
+          body.add(fin)
+        }
+      })
+
+      for (let i = 0; i < 2; i++) {
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(1, 0.12, 8, 40),
+          new THREE.MeshBasicMaterial({
+            color: 0x2affc8,
+            transparent: true,
+            opacity: 0.8,
+            depthWrite: false,
+          }),
+        )
+        ring.rotation.x = Math.PI / 2
+        ring.visible = false
+        const sprayPos = new Float32Array(18 * 3)
+        const sprayGeo = new THREE.BufferGeometry()
+        sprayGeo.setAttribute('position', new THREE.BufferAttribute(sprayPos, 3))
+        const spray = new THREE.Points(
+          sprayGeo,
+          new THREE.PointsMaterial({
+            color: 0xdffcff,
+            size: 0.16,
+            sizeAttenuation: true,
+            transparent: true,
+            opacity: 0.9,
+            depthWrite: false,
+          }),
+        )
+        spray.visible = false
+        group.add(ring, spray)
+        splashes.push({ ring, spray, age: 0, life: 1, x: 0, z: 0, active: false })
+      }
+
+      fishLight = new THREE.PointLight(0x2affc8, 0, 16)
+      group.add(fishLight)
+
       scene.add(group)
       colorFrom(palette.a, uA)
       colorFrom(palette.c, uC)
     },
-    update(m, time, _dt, palette) {
-      if (!oceanMat) return
+    update(m, time, dt, palette, speed = 1) {
+      if (!oceanMat || !group) return
+      clock += dt
+      const realDt = speed > 0.001 ? dt / speed : dt
+      const neonA = new THREE.Color().setRGB(...palette.a)
+      const neonC = new THREE.Color().setRGB(...palette.c)
+      const lift = (c: THREE.Color, target: number) => {
+        const luma = Math.max(c.r * 0.299 + c.g * 0.587 + c.b * 0.114, 0.05)
+        return c.multiplyScalar(target / luma)
+      }
+      lift(neonA, 0.62)
+      lift(neonC, 0.62)
+
+      const bassJump = m.bass - lastBass
+      lastBass += (m.bass - lastBass) * 0.25
+      pulseAge += dt
+      if ((m.beat || bassJump > 0.22) && pulseAge > 0.45) pulseAge = 0
       oceanMat.uniforms.uTime.value = time
       oceanMat.uniforms.uBass.value = m.bass
       oceanMat.uniforms.uEnergy.value = m.energy
+      oceanMat.uniforms.uTreble.value = m.treble
+      oceanMat.uniforms.uPulse.value = Math.exp(-pulseAge * 1.4) * (0.5 + m.energy * 0.6)
+      oceanMat.uniforms.uPulseR.value = pulseAge * 16
       colorFrom(palette.a, oceanMat.uniforms.uA.value)
       colorFrom(palette.c, oceanMat.uniforms.uC.value)
       if (moonMat) moonMat.color.setRGB(0.9 + m.energy * 0.08, 0.93, 1)
+      if (skyMat) {
+        skyMat.uniforms.uNeon.value.copy(neonA)
+        skyMat.uniforms.uGlow.value = 0.3 + m.energy * 0.4
+      }
+      for (const hm of horizonMats) hm.color.copy(neonC)
+      if (planktonA) {
+        planktonA.position.x = ((planktonA.position.x + dt * 0.35 + 40) % 80) - 40
+        const mat = planktonA.material as THREE.PointsMaterial
+        mat.color.copy(neonA)
+        mat.opacity = 0.55 + m.treble * 0.45
+      }
+      if (planktonB) {
+        planktonB.position.x = ((planktonB.position.x - dt * 0.22 + 40) % 80) - 40
+        const mat = planktonB.material as THREE.PointsMaterial
+        mat.color.copy(neonC)
+        mat.opacity = 0.45 + m.mid * 0.5
+      }
+
+      jumpTimer += realDt
+      if (!jump && jumpTimer >= JUMP_INTERVAL) {
+        jumpTimer -= JUMP_INTERVAL
+        startJump()
+      }
+      for (const f of fishes) {
+        f.mat.uniforms.uNeon.value.copy(neonA).lerp(neonC, f.tint)
+        f.mat.uniforms.uGlow.value = m.energy
+      }
+      if (jump) {
+        const t = (clock - jump.start) / jump.dur
+        if (t >= 1) {
+          jump.fish.group.visible = false
+          jump = null
+          if (fishLight) fishLight.intensity = 0
+        } else {
+          const f = jump.fish
+          const arc = (u: number) => jump!.ySub + (f.peak - jump!.ySub) * Math.sin(Math.PI * u)
+          const x = jump.x0 + jump.dx * t
+          const z = jump.z0 + jump.dz * t
+          const y = arc(t)
+          const t2 = Math.min(t + 0.02, 1)
+          const nx = jump.x0 + jump.dx * t2
+          const nz = jump.z0 + jump.dz * t2
+          const ny = arc(t2)
+          f.group.position.set(x, y, z)
+          f.group.lookAt(nx, ny, nz)
+          f.body.rotation.z = Math.sin(t * Math.PI * 3.2) * 0.14 * f.wiggle
+          f.body.rotation.x = Math.sin(t * Math.PI * 2) * 0.05 * f.wiggle
+          const surfaceT = Math.asin(Math.min(1, -jump.ySub / (f.peak - jump.ySub))) / Math.PI
+          if (!jump.entryDone && t >= surfaceT) {
+            jump.entryDone = true
+            fireSplash(x, z, f.length)
+          }
+          if (!jump.exitDone && t >= 1 - surfaceT) {
+            jump.exitDone = true
+            fireSplash(x, z, f.length)
+          }
+          if (fishLight) {
+            fishLight.position.set(x, Math.max(y, 0.4) + 0.4, z)
+            fishLight.color.copy(neonA).lerp(neonC, f.tint)
+            fishLight.intensity = (y > 0 ? 6 : 1.5) + m.energy * 3
+          }
+        }
+      }
+
+      for (const s of splashes) {
+        if (!s.active) continue
+        s.age += dt
+        const k = s.age / s.life
+        if (k >= 1) {
+          s.active = false
+          s.ring.visible = false
+          s.spray.visible = false
+          continue
+        }
+        const surface = waveY(s.x, s.z, time, m.bass)
+        s.ring.position.set(s.x, surface + 0.12, s.z)
+        s.ring.scale.setScalar(0.4 + k * 4.2)
+        const ringMat = s.ring.material as THREE.MeshBasicMaterial
+        ringMat.color.copy(neonA)
+        ringMat.opacity = (1 - k) * 0.85
+        const pos = s.spray.geometry.getAttribute('position') as THREE.BufferAttribute
+        for (let i = 0; i < pos.count; i++) {
+          const ang = (i / pos.count) * Math.PI * 2 + i * 0.7
+          const spd = 1.6 + ((i * 37) % 11) * 0.12
+          const rise = 3.4 + ((i * 13) % 7) * 0.35
+          pos.setXYZ(
+            i,
+            s.x + Math.cos(ang) * spd * s.age,
+            surface + rise * s.age - 4.2 * s.age * s.age,
+            s.z + Math.sin(ang) * spd * s.age,
+          )
+        }
+        pos.needsUpdate = true
+        const sprayMat = s.spray.material as THREE.PointsMaterial
+        sprayMat.color.copy(neonC).lerp(new THREE.Color(0xdffcff), 0.5)
+        sprayMat.opacity = (1 - k) * 0.9
+      }
     },
     dispose(scene) {
       if (group) {
@@ -2797,7 +3824,15 @@ export function createTide(): VisualStyle {
       scene.background = new THREE.Color(0x030308)
       group = null
       oceanMat = null
+      skyMat = null
       moonMat = null
+      fishLight = null
+      planktonA = null
+      planktonB = null
+      horizonMats = []
+      fishes.length = 0
+      splashes.length = 0
+      jump = null
     },
   }
 }
@@ -2811,8 +3846,8 @@ export const STYLE_CATALOG = [
   { id: 'drive', label: 'Night Drive', hint: 'Cybertruck into the city' },
   { id: 'storm', label: 'Storm', hint: 'Colored lightning weather' },
   { id: 'hive', label: 'Hive', hint: 'Honeycomb and bees' },
-  { id: 'void', label: 'Void', hint: 'Black hole singularity' },
-  { id: 'tide', label: 'Tide', hint: 'Bioluminescent night tide' },
+  { id: 'void', label: 'Void', hint: 'Black hole in deep space' },
+  { id: 'tide', label: 'Tide', hint: 'Neon tide with leaping fish' },
 ] as const
 
 export const STYLE_FACTORIES = [
