@@ -28,6 +28,9 @@ jobs:
         run: npm ci
 
       - name: Build Windows NSIS installer
+        env:
+          # electron-builder auto-publishes on tags unless disabled; softprops handles releases.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run dist:installer
 
       - name: Upload installer artifact
@@ -36,6 +39,7 @@ jobs:
           name: Aether-Windows-Installer
           path: |
             release/*.exe
+            release/*.exe.blockmap
             release/latest.yml
           if-no-files-found: error
 
@@ -45,7 +49,9 @@ jobs:
         with:
           files: |
             release/*.exe
+            release/*.exe.blockmap
             release/latest.yml
           generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
