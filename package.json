@@ -27,16 +27,24 @@
       "package.json"
     ],
     "asar": true,
+    "artifactName": "${productName}-Setup-${version}.${ext}",
     "win": {
       "icon": "build/icon.png",
       "target": [
-        "dir"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Aether"
     }
   },
   "dependencies": {
