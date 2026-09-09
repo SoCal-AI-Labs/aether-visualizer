@@ -2,7 +2,7 @@
   "name": "aether-visualizer",
   "productName": "Aether",
   "desktopName": "Aether.desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Aether - cinematic audio visualizer",
   "author": "SoCal AI Labs",
   "private": true,
