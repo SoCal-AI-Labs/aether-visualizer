@@ -5919,7 +5919,9 @@ export function createButterfly(): VisualStyle {
   const moonDir = new THREE.Vector3(-0.35, 0.3, -0.88).normalize()
   const FOG = 0.042
   const COUNT = 72
-  const FLOWERS = 150
+  const FLOWERS = 300
+  const SPIKES = 70
+  const FLORETS = 11
   const GRASS = 12500
   const FIREFLIES = 220
   const DUST = 1800
@@ -5978,7 +5980,17 @@ export function createButterfly(): VisualStyle {
     mat: THREE.Matrix4
     style: [number, number, number, number]
   }
-  type Flower = { pos: THREE.Vector3; band: number; glow: number; hue: number; taken: boolean }
+  // species: 0 daisy, 1 star lily, 2 poppy, 3 seed puff
+  type Flower = { pos: THREE.Vector3; band: number; glow: number; hue: number; taken: boolean; species: number }
+  type Spike = { x: number; z: number; band: number; glow: number }
+  const spikes: Spike[] = []
+  let spikeGlow: THREE.BufferAttribute | null = null
+  let meteorT = -1
+  let meteorDur = 1
+  let meteorTimer = 6
+  const meteorA = new THREE.Vector3()
+  const meteorB = new THREE.Vector3()
+  const camFwd = new THREE.Vector3()
   const flies: Fly[] = []
   const flowers: Flower[] = []
   const dustVel = new Float32Array(DUST * 3)
@@ -6199,6 +6211,8 @@ export function createButterfly(): VisualStyle {
       swirlTimer = 22
       swirlActive = false
       swirlView = 0
+      meteorT = -1
+      meteorTimer = 4
       updraft = 0
       beatGlow = 0
       dustHead = 0
@@ -6208,7 +6222,13 @@ export function createButterfly(): VisualStyle {
       const skyMat = new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
-        uniforms: { ...shared, uMoonDir: { value: moonDir } },
+        uniforms: {
+          ...shared,
+          uMoonDir: { value: moonDir },
+          uMeteorA: { value: meteorA },
+          uMeteorB: { value: meteorB },
+          uMeteorT: { value: -1 },
+        },
         vertexShader: `
           varying vec3 vDir;
           void main() {
@@ -6218,7 +6238,8 @@ export function createButterfly(): VisualStyle {
         `,
         fragmentShader: `
           uniform float uTime, uEnergy, uBeat;
-          uniform vec3 uMoonDir;
+          uniform vec3 uMoonDir, uMeteorA, uMeteorB;
+          uniform float uMeteorT;
           varying vec3 vDir;
           ${glslCommon}
           float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
@@ -6256,6 +6277,21 @@ export function createButterfly(): VisualStyle {
               }
             }
             col += vec3(0.05, 0.05, 0.08) * exp(-abs(el) * 22.0) * 0.5;
+            // shooting star: a head sliding from A to B with a tapering trail (added before the
+            // tree line so the trees hide it as it drops out of sight)
+            if (uMeteorT >= 0.0) {
+              float t = uMeteorT;
+              vec3 head = normalize(mix(uMeteorA, uMeteorB, t));
+              vec3 tail = normalize(mix(uMeteorA, uMeteorB, max(t - 0.35, 0.0)));
+              vec3 seg = head - tail;
+              float k = clamp(dot(d - tail, seg) / max(dot(seg, seg), 0.0000001), 0.0, 1.0);
+              vec3 off = d - (tail + seg * k);
+              float trail = exp(-dot(off, off) / (0.000008 * (0.3 + k))) * k * k;
+              vec3 hd = d - head;
+              float glowHead = exp(-dot(hd, hd) / 0.000025);
+              float fade = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.72, 1.0, t));
+              col += mix(vec3(0.85, 0.92, 1.0), neon(uC), 0.3) * (trail * 2.6 + glowHead * 3.2) * fade;
+            }
             if (el > 0.22) {
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
               return;
@@ -6330,23 +6366,45 @@ export function createButterfly(): VisualStyle {
       group.add(ground)
 
       // flowers grow in patches; each listens to its own slice of the spectrum
-      const patches = Array.from({ length: 7 }, () => {
+      // (kept inside radius ~6.5 so nothing grows under the camera's orbit path)
+      const patches = Array.from({ length: 12 }, (_, i) => {
         const a = rng.next() * Math.PI * 2
-        const r = Math.sqrt(rng.next()) * 4.8
-        return { x: Math.cos(a) * r, z: Math.sin(a) * r, r: rng.range(1.3, 2.6), hue: rng.pick(PICKS) }
+        const r = Math.sqrt(rng.next()) * 5.2
+        return { x: Math.cos(a) * r, z: Math.sin(a) * r, r: rng.range(1.0, 1.9), hue: rng.pick(PICKS), species: i % 4 }
       })
+      const HEIGHT = [
+        [0.45, 0.9],
+        [0.55, 1.0],
+        [0.4, 0.75],
+        [0.6, 1.05],
+      ]
       for (let i = 0; i < FLOWERS; i++) {
+        // most flowers belong to a patch with a dominant species; the rest are scattered wildflowers
+        const scattered = i % 7 === 6
         const pc = patches[i % patches.length]
         const a = rng.next() * Math.PI * 2
-        const r = Math.sqrt(rng.next()) * pc.r
+        const r = scattered ? Math.sqrt(rng.next()) * 6.5 : Math.sqrt(rng.next()) * pc.r
+        const species = scattered || rng.next() < 0.22 ? rng.int(4) : pc.species
+        const [h0, h1] = HEIGHT[species]
         flowers.push({
-          pos: new THREE.Vector3(pc.x + Math.cos(a) * r, rng.range(0.45, 0.95), pc.z + Math.sin(a) * r),
+          pos: scattered
+            ? new THREE.Vector3(Math.cos(a) * r, rng.range(h0, h1), Math.sin(a) * r)
+            : new THREE.Vector3(pc.x + Math.cos(a) * r, rng.range(h0, h1), pc.z + Math.sin(a) * r),
           band: 2 + Math.floor(rng.next() * 40),
           glow: 0.2,
-          hue: Math.min(2, Math.max(0, pc.hue + rng.range(-0.1, 0.1))),
+          hue: scattered ? rng.pick(PICKS) : Math.min(2, Math.max(0, pc.hue + rng.range(-0.1, 0.1))),
           taken: false,
+          species,
         })
       }
+      // lupine spikes ring the patch edges
+      for (let s = 0; s < SPIKES; s++) {
+        const pc = patches[(s * 5) % patches.length]
+        const a = rng.next() * Math.PI * 2
+        const r = pc.r * rng.range(0.7, 1.25)
+        spikes.push({ x: pc.x + Math.cos(a) * r, z: pc.z + Math.sin(a) * r, band: 2 + Math.floor(rng.next() * 40), glow: 0.2 })
+      }
+      const spikeH = spikes.map(() => rng.range(0.95, 1.45))
 
       // grass blades + flower stems share one swaying instanced mesh
       const grassMat = new THREE.ShaderMaterial({
@@ -6388,7 +6446,7 @@ export function createButterfly(): VisualStyle {
       })
       const blade = new THREE.PlaneGeometry(1, 1, 1, 4)
       blade.translate(0, 0.5, 0)
-      const grass = new THREE.InstancedMesh(blade, grassMat, GRASS + FLOWERS)
+      const grass = new THREE.InstancedMesh(blade, grassMat, GRASS + FLOWERS + SPIKES)
       for (let i = 0; i < GRASS; i++) {
         const a = rng.next() * Math.PI * 2
         const r = Math.sqrt(rng.next()) * 19
@@ -6406,6 +6464,13 @@ export function createButterfly(): VisualStyle {
         dummy.updateMatrix()
         grass.setMatrixAt(GRASS + i, dummy.matrix)
       }
+      for (let s = 0; s < SPIKES; s++) {
+        dummy.position.set(spikes[s].x, 0, spikes[s].z)
+        dummy.rotation.set(0, rng.next() * Math.PI, 0)
+        dummy.scale.set(0.7, spikeH[s], 1)
+        dummy.updateMatrix()
+        grass.setMatrixAt(GRASS + FLOWERS + s, dummy.matrix)
+      }
       grass.frustumCulled = false
       group.add(grass)
 
@@ -6417,19 +6482,23 @@ export function createButterfly(): VisualStyle {
         vertexShader: `
           uniform float uTime;
           attribute float aGlow;
-          attribute vec3 aFlower;
+          attribute vec4 aFlower;
           varying vec2 vP;
           varying float vGlow;
-          varying vec3 vFlower;
+          varying vec4 vFlower;
           varying vec3 vWorld;
           ${glslCommon}
           void main() {
             vec3 p = position;
             float r = length(p.xz);
-            // petals open with the music and cup closed when it is quiet
-            float open = mix(0.5, 1.0, clamp(aGlow, 0.0, 1.0));
+            float sp = floor(aFlower.w + 0.5);
+            // petals open with the music and cup closed when it is quiet; poppies stay cupped,
+            // lilies curl their petal tips back as they open, puffs barely move
+            float open = mix(sp > 2.5 ? 0.85 : 0.5, 1.0, clamp(aGlow, 0.0, 1.0));
             p.xz *= open;
             p.y += r * r * (1.1 - open) * 0.8;
+            if (sp > 1.5 && sp < 2.5) p.y += r * r * 0.3;
+            if (sp > 0.5 && sp < 1.5) p.y -= r * r * open * 0.22;
             mat4 m = modelMatrix * instanceMatrix;
             vec4 world = m * vec4(p, 1.0);
             world.xz += gust((m * vec4(0.0, 0.0, 0.0, 1.0)).xz, uTime);
@@ -6443,21 +6512,55 @@ export function createButterfly(): VisualStyle {
         fragmentShader: `
           varying vec2 vP;
           varying float vGlow;
-          varying vec3 vFlower;
+          varying vec4 vFlower;
           varying vec3 vWorld;
           ${glslCommon}
           void main() {
             float r = length(vP);
             float ang = atan(vP.y, vP.x + 0.0001);
             float n = vFlower.y;
-            float petal = 0.5 + 0.5 * pow(abs(cos(ang * n * 0.5 + vFlower.z * 6.0)), 0.7);
-            float mask = 1.0 - smoothstep(petal - 0.05, petal + 0.01, r);
-            if (mask < 0.02) discard;
+            float sp = floor(vFlower.w + 0.5);
+            float spin = vFlower.z * 6.2831853;
+            float c = abs(cos(ang * n * 0.5 + spin));
             vec3 pc = neon(pickCol(vFlower.x));
-            float streak = 0.8 + 0.2 * cos(ang * n * 3.0);
-            vec3 col = pc * (0.34 + vGlow * 1.9) * mix(0.6, 1.15, r / petal) * streak;
-            float heart = 1.0 - smoothstep(0.1, 0.19, r);
-            col = mix(col, mix(vec3(1.0, 0.9, 0.62), pc, 0.35) * (0.5 + vGlow * 1.8), heart);
+            vec3 ac = neon(pickCol(vFlower.x < 1.5 ? 2.0 : 0.0));
+            float lum = 0.34 + vGlow * 1.9;
+            float mask;
+            vec3 col;
+            if (sp < 0.5) {
+              // daisy: rounded petals and a warm glowing heart
+              float petal = 0.5 + 0.5 * pow(c, 0.7);
+              mask = 1.0 - smoothstep(petal - 0.05, petal + 0.01, r);
+              col = pc * lum * mix(0.6, 1.15, r / petal) * (0.8 + 0.2 * cos(ang * n * 3.0));
+              col = mix(col, mix(vec3(1.0, 0.9, 0.62), pc, 0.35) * (0.5 + vGlow * 1.8), 1.0 - smoothstep(0.1, 0.19, r));
+            } else if (sp < 1.5) {
+              // star lily: pointed petals with a bright accent midrib and a white stamen
+              float petal = 0.22 + 0.78 * pow(c, 2.6);
+              mask = 1.0 - smoothstep(petal - 0.04, petal + 0.01, r);
+              float rib = 1.0 - smoothstep(0.02, 0.12, abs(sin(ang * n * 0.5 + spin)));
+              col = mix(pc * lum * (0.55 + 0.6 * r), ac * (0.6 + lum * 0.8), rib * smoothstep(0.1, 0.3, r) * 0.8);
+              col = mix(col, vec3(1.0, 0.95, 0.85) * (0.6 + vGlow * 2.0), 1.0 - smoothstep(0.05, 0.12, r));
+            } else if (sp < 2.5) {
+              // poppy: broad overlapping petals, dark heart ringed with accent light
+              float petal = 0.8 + 0.2 * c;
+              mask = 1.0 - smoothstep(petal - 0.05, petal + 0.01, r);
+              float seam = 1.0 - smoothstep(0.0, 0.25, c);
+              col = pc * lum * mix(0.7, 1.2, r) * (1.0 - seam * 0.45);
+              col = mix(col, vec3(0.02, 0.01, 0.03), 1.0 - smoothstep(0.24, 0.32, r));
+              col += ac * exp(-(r - 0.3) * (r - 0.3) * 324.0) * (0.4 + vGlow * 1.5);
+              col += vec3(1.0, 0.9, 0.6) * (1.0 - smoothstep(0.04, 0.08, r)) * (0.4 + vGlow);
+            } else {
+              // seed puff: soft streaked sphere tipped with sparks
+              float a01 = fract(ang * n / 6.2831853 + vFlower.z) - 0.5;
+              float streak = 0.5 + 0.5 * cos(a01 * 6.2831853);
+              float disc = 1.0 - smoothstep(0.7, 0.9, r);
+              float tip = 1.0 - smoothstep(0.035, 0.07, length(vec2(a01 * 6.2831853 / n * r, r - 0.84)));
+              float core = 1.0 - smoothstep(0.1, 0.18, r);
+              vec3 fluff = mix(vec3(0.9, 0.95, 1.0), pc, 0.5);
+              col = fluff * disc * (0.12 + streak * 0.25) * (0.5 + lum * 0.6) + fluff * tip * (0.7 + lum * 1.3) + pc * core * lum;
+              mask = max(max(disc * (0.3 + streak * 0.3), tip), core);
+            }
+            if (mask < 0.02) discard;
             col = mix(col, uFogColor, fogAmt(vWorld));
             gl_FragColor = vec4(max(col, vec3(0.0)), mask);
           }
@@ -6465,7 +6568,7 @@ export function createButterfly(): VisualStyle {
       })
       const headGeo = new THREE.CircleGeometry(1, 36)
       headGeo.rotateX(-Math.PI / 2)
-      const flowerAttr = new THREE.InstancedBufferAttribute(new Float32Array(FLOWERS * 3), 3)
+      const flowerAttr = new THREE.InstancedBufferAttribute(new Float32Array(FLOWERS * 4), 4)
       headGlow = new THREE.InstancedBufferAttribute(new Float32Array(FLOWERS), 1)
       headGlow.setUsage(THREE.DynamicDrawUsage)
       headGeo.setAttribute('aFlower', flowerAttr)
@@ -6477,10 +6580,17 @@ export function createButterfly(): VisualStyle {
         const fl = flowers[i]
         dummy.position.copy(fl.pos)
         dummy.rotation.set(rng.range(-0.45, 0.45), rng.next() * Math.PI * 2, rng.range(-0.45, 0.45))
-        dummy.scale.setScalar(rng.range(0.13, 0.22))
+        const size = [
+          [0.13, 0.22],
+          [0.16, 0.24],
+          [0.18, 0.27],
+          [0.13, 0.19],
+        ][fl.species]
+        dummy.scale.setScalar(rng.range(size[0], size[1]))
         dummy.updateMatrix()
         heads.setMatrixAt(i, dummy.matrix)
-        flowerAttr.setXYZ(i, fl.hue, rng.pick([5, 5, 6, 8]), rng.next())
+        const petals = [rng.pick([5, 6, 8, 12]), rng.pick([5, 6]), rng.pick([4, 5]), 16][fl.species]
+        flowerAttr.setXYZW(i, fl.hue, petals, rng.next(), fl.species)
         haloPos.set([fl.pos.x, fl.pos.y + 0.02, fl.pos.z], i * 3)
         haloHue[i] = fl.hue
       }
@@ -6528,6 +6638,61 @@ export function createButterfly(): VisualStyle {
       )
       halos.frustumCulled = false
       group.add(halos)
+
+      // lupine spikes: spiralling columns of glowing florets with a pulse that climbs each spike
+      const flPos = new Float32Array(SPIKES * FLORETS * 3)
+      const flHue = new Float32Array(SPIKES * FLORETS)
+      const flSpike = new Float32Array(SPIKES * FLORETS * 2)
+      for (let s = 0; s < SPIKES; s++) {
+        const hue = rng.pick(PICKS)
+        const seed = rng.next() * Math.PI * 2
+        for (let k = 0; k < FLORETS; k++) {
+          const i = s * FLORETS + k
+          const frac = k / (FLORETS - 1)
+          const y = spikeH[s] * (0.55 + 0.45 * frac)
+          const ang = k * 2.39996 + seed
+          const rad = 0.045 * (1 - frac * 0.7)
+          flPos.set([spikes[s].x + Math.cos(ang) * rad, y, spikes[s].z + Math.sin(ang) * rad], i * 3)
+          flHue[i] = hue
+          flSpike.set([frac, (y / spikeH[s]) ** 2], i * 2)
+        }
+      }
+      const spikeGeo = new THREE.BufferGeometry()
+      spikeGeo.setAttribute('position', new THREE.BufferAttribute(flPos, 3))
+      spikeGeo.setAttribute('aHue', new THREE.BufferAttribute(flHue, 1))
+      spikeGeo.setAttribute('aSpike', new THREE.BufferAttribute(flSpike, 2))
+      spikeGlow = new THREE.BufferAttribute(new Float32Array(SPIKES * FLORETS), 1)
+      spikeGlow.setUsage(THREE.DynamicDrawUsage)
+      spikeGeo.setAttribute('aGlow', spikeGlow)
+      const lupines = new THREE.Points(
+        spikeGeo,
+        new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          uniforms: { ...shared },
+          vertexShader: `
+            uniform float uTime, uScale;
+            attribute float aGlow;
+            attribute float aHue;
+            attribute vec2 aSpike;
+            varying vec3 vCol;
+            ${glslCommon}
+            void main() {
+              vec3 p = position;
+              p.xz += gust(p.xz, uTime) * aSpike.y;
+              vec4 mv = modelViewMatrix * vec4(p, 1.0);
+              float climb = 0.6 + 0.4 * sin(uTime * 3.0 - aSpike.x * 7.0);
+              gl_PointSize = min((0.05 + 0.035 * (1.0 - aSpike.x) + aGlow * 0.03) * uScale / max(-mv.z, 0.1), uScale * 0.1);
+              gl_Position = projectionMatrix * mv;
+              vCol = neon(pickCol(aHue)) * (0.3 + aGlow * 1.3) * climb * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
+            }
+          `,
+          fragmentShader: pointFrag('3.0'),
+        }),
+      )
+      lupines.frustumCulled = false
+      group.add(lupines)
 
       const ffPos = new Float32Array(FIREFLIES * 3)
       const ffPhase = new Float32Array(FIREFLIES)
@@ -6838,8 +7003,9 @@ export function createButterfly(): VisualStyle {
 
       scene.add(group)
     },
-    update(m, time, dt, palette) {
+    update(m, time, dt, palette, speed) {
       if (!group || !cameraRef || !sky || !wings || !bodies || !wingAttr || !glowAttr || !headGlow || !haloGlow || !dust) return
+      const realDt = dt / Math.max(0.1, speed ?? 1)
       colorFrom(palette.a, uA)
       colorFrom(palette.b, uB)
       colorFrom(palette.c, uC)
@@ -6898,6 +7064,41 @@ export function createButterfly(): VisualStyle {
       }
       headGlow.needsUpdate = true
       haloGlow.needsUpdate = true
+      if (spikeGlow) {
+        for (let s = 0; s < SPIKES; s++) {
+          const sp = spikes[s]
+          const spec = m.spectrum[sp.band % m.spectrum.length] ?? 0
+          sp.glow += (0.15 + spec * 1.3 - sp.glow) * Math.min(1, dt * 5)
+          const g = sp.glow + beatGlow * 0.2 + swirlView * 0.3
+          for (let k = 0; k < FLORETS; k++) spikeGlow.setX(s * FLORETS + k, g)
+        }
+        spikeGlow.needsUpdate = true
+      }
+
+      // an occasional shooting star, always launched inside the current view (wall-clock timing)
+      meteorTimer -= realDt
+      if (meteorT < 0 && (meteorTimer <= 0 || (m.beat && m.energy > 0.6 && meteorTimer < 4))) {
+        // start partway up the visible sky on one side and streak across toward the middle,
+        // sized to the camera's real field of view so it stays on screen at any aspect ratio
+        cameraRef.getWorldDirection(camFwd)
+        const halfV = THREE.MathUtils.degToRad(cameraRef.fov) / 2
+        const halfH = Math.atan(Math.tan(halfV) * cameraRef.aspect)
+        const side = Math.random() < 0.5 ? -1 : 1
+        const az = Math.atan2(camFwd.z, camFwd.x) + side * halfH * (0.2 + Math.random() * 0.45)
+        const az2 = az - side * halfH * (0.45 + Math.random() * 0.4)
+        const el = Math.asin(Math.max(-1, Math.min(1, camFwd.y))) + halfV * (0.35 + Math.random() * 0.4)
+        const el2 = Math.max(0.14, el - (0.1 + Math.random() * 0.08))
+        meteorA.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az))
+        meteorB.set(Math.cos(el2) * Math.cos(az2), Math.sin(el2), Math.cos(el2) * Math.sin(az2))
+        meteorT = 0
+        meteorDur = 0.9 + Math.random() * 0.7
+        meteorTimer = 7 + Math.random() * 9
+      }
+      if (meteorT >= 0) {
+        meteorT += realDt / meteorDur
+        if (meteorT > 1) meteorT = -1
+      }
+      ;(sky.material as THREE.ShaderMaterial).uniforms.uMeteorT.value = meteorT
 
       if (m.beat) {
         // a flash ripples outward through the swarm from one butterfly
@@ -7156,6 +7357,8 @@ export function createButterfly(): VisualStyle {
       dust = null
       flies.length = 0
       flowers.length = 0
+      spikes.length = 0
+      spikeGlow = null
       drawOrder.length = 0
     },
   }
