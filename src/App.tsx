@@ -5,7 +5,7 @@ import { VisualizerEngine } from './visuals/engine'
 import { STYLE_CATALOG } from './visuals/styles'
 import type { DesktopSource } from '../electron/preload'
 
-const VISUAL_TUNE = 89
+const VISUAL_TUNE = 91
 
 const PRESET_URLS = [
   { label: 'YouTube', url: 'https://www.youtube.com' },
@@ -118,7 +118,7 @@ export default function App() {
         const next = STYLE_CATALOG[index]
         if (next) applyStyle(next.id)
       }
-      const extra = ['KeyQ', 'KeyW', 'KeyE'].indexOf(event.code)
+      const extra = ['KeyQ', 'KeyW', 'KeyE', 'KeyT'].indexOf(event.code)
       if (extra >= 0) {
         const next = STYLE_CATALOG[10 + extra]
         if (next) applyStyle(next.id)
@@ -472,7 +472,7 @@ export default function App() {
       </div>
 
       <p className="help" style={{ position: 'absolute', left: 22, bottom: 8, pointerEvents: 'none' }}>
-        Space randomize · R reshuffle · 1–9 / 0 / Q W E styles · H hide UI · F fullscreen · drop an audio file
+        Space randomize · R reshuffle · 1–9 / 0 / Q W E T styles · H hide UI · F fullscreen · drop an audio file
       </p>
 
       <input

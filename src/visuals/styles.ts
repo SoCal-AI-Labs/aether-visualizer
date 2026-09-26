@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { AudioMetrics } from '../audio/AudioEngine'
 import type { Palette } from './palette'
 import { styleRng } from './rng'
@@ -5899,6 +5900,1226 @@ export function createRainWindow(): VisualStyle {
   }
 }
 
+export function createButterfly(): VisualStyle {
+  let group: THREE.Group | null = null
+  let cameraRef: THREE.PerspectiveCamera | null = null
+  let sky: THREE.Mesh | null = null
+  let wings: THREE.InstancedMesh | null = null
+  let bodies: THREE.InstancedMesh | null = null
+  let wingAttr: THREE.InstancedBufferAttribute | null = null
+  let glowAttr: THREE.InstancedBufferAttribute | null = null
+  let headGlow: THREE.InstancedBufferAttribute | null = null
+  let haloGlow: THREE.BufferAttribute | null = null
+  let dust: THREE.Points | null = null
+  const uA = new THREE.Color()
+  const uB = new THREE.Color()
+  const uC = new THREE.Color()
+  const fogColor = new THREE.Color(0.012, 0.014, 0.026)
+  const moonDir = new THREE.Vector3(-0.35, 0.3, -0.88).normalize()
+  const FOG = 0.042
+  const COUNT = 72
+  const FLOWERS = 150
+  const GRASS = 12500
+  const FIREFLIES = 220
+  const DUST = 1800
+  const WANDER = 0
+  const APPROACH = 1
+  const PERCH = 2
+  // palette positions for pickCol: a, a/b blend, b, c - blending b toward the complementary c goes grey
+  const PICKS = [0, 0.5, 1, 2]
+  const shared = {
+    uA: { value: uA },
+    uB: { value: uB },
+    uC: { value: uC },
+    uFogColor: { value: fogColor },
+    uFog: { value: FOG },
+    uTime: { value: 0 },
+    uEnergy: { value: 0 },
+    uBeat: { value: 0 },
+    uScale: { value: 500 },
+    uBlink: { value: 0 },
+  }
+  type Fly = {
+    pos: THREE.Vector3
+    vel: THREE.Vector3
+    mode: number
+    flower: number
+    perchT: number
+    phase: number
+    rate: number
+    speed: number
+    scale: number
+    heading: number
+    bank: number
+    theta: number
+    flex: number
+    flapAmp: number
+    gliding: boolean
+    glideT: number
+    glow: number
+    flash: number
+    flashDelay: number
+    flashAmt: number
+    emit: number
+    band: number
+    pick: number
+    swirl: boolean
+    swirlAng: number
+    swirlLayer: number
+    fx: number
+    fy: number
+    fz: number
+    sx: number
+    sy: number
+    sz: number
+    seed: number
+  }
+  type Flower = { pos: THREE.Vector3; band: number; glow: number; hue: number; taken: boolean }
+  const flies: Fly[] = []
+  const flowers: Flower[] = []
+  const dustVel = new Float32Array(DUST * 3)
+  let dustHead = 0
+  let swirlTimer = 22
+  let swirlActive = false
+  let swirlT = 0
+  let swirlClock = 0
+  let swirlView = 0
+  let swirlHue = 0
+  let updraft = 0
+  let beatGlow = 0
+  const dummy = new THREE.Object3D()
+  const tmp = new THREE.Vector3()
+  const desired = new THREE.Vector3()
+  const look = new THREE.Vector3()
+  const tint = new THREE.Color()
+
+  const glslCommon = `
+    uniform vec3 uA, uB, uC, uFogColor;
+    uniform float uFog;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+    }
+    float fbm(vec2 p) {
+      float v = 0.0;
+      float a = 0.5;
+      for (int i = 0; i < 4; i++) {
+        v += a * noise(p);
+        p *= 2.03;
+        a *= 0.5;
+      }
+      return v;
+    }
+    vec3 neon(vec3 c) {
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
+      vec3 s = max(mix(vec3(l), c, 1.8), vec3(0.0));
+      return s * (0.6 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
+    }
+    vec3 pickCol(float t) { return t < 1.0 ? mix(uA, uB, t) : mix(uB, uC, clamp(t - 1.0, 0.0, 1.0)); }
+    float fogAmt(vec3 w) {
+      float d = distance(w, cameraPosition) * uFog;
+      return 1.0 - exp(-d * d);
+    }
+    vec2 gust(vec2 p, float t) {
+      return vec2((sin(t * 0.9 + p.x * 0.35 + p.y * 0.2) * 0.5 + sin(t * 1.7 + p.x * 0.9) * 0.25) * 0.18, cos(t * 0.7 + p.y * 0.4) * 0.08);
+    }
+  `
+  // CPU mirror of the shader gust so perched butterflies ride their swaying flower
+  const gustX = (x: number, z: number, t: number) => (Math.sin(t * 0.9 + x * 0.35 + z * 0.2) * 0.5 + Math.sin(t * 1.7 + x * 0.9) * 0.25) * 0.18
+  const gustZ = (z: number, t: number) => Math.cos(t * 0.7 + z * 0.4) * 0.08
+  const smooth = (x: number) => x * x * (3 - 2 * x)
+  const pickInto = (t: number, out: THREE.Color) => (t < 1 ? out.copy(uA).lerp(uB, t) : out.copy(uB).lerp(uC, Math.min(1, t - 1)))
+  const vivid = (c: THREE.Color) => c.multiplyScalar(0.6 / Math.max(0.05, c.r * 0.299 + c.g * 0.587 + c.b * 0.114))
+
+  const buildWingGeometry = () => {
+    const NA = 8
+    const NB = 10
+    const pos: number[] = []
+    const side: number[] = []
+    const wuv: number[] = []
+    const idx: number[] = []
+    for (const s of [-1, 1]) {
+      const base = pos.length / 3
+      for (let j = 0; j <= NB; j++) {
+        const b = -1 + (j / NB) * 2
+        for (let i = 0; i <= NA; i++) {
+          const a = (i / NA) * 1.15
+          pos.push(s * a, 0, -b)
+          side.push(s)
+          wuv.push(a, b)
+        }
+      }
+      for (let j = 0; j < NB; j++) {
+        for (let i = 0; i < NA; i++) {
+          const k = base + j * (NA + 1) + i
+          idx.push(k, k + 1, k + NA + 1, k + 1, k + NA + 2, k + NA + 1)
+        }
+      }
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    geo.setAttribute('aSide', new THREE.Float32BufferAttribute(side, 1))
+    geo.setAttribute('aWingUv', new THREE.Float32BufferAttribute(wuv, 2))
+    geo.setIndex(idx)
+    return geo
+  }
+
+  const buildBodyGeometry = () => {
+    const abdomen = new THREE.SphereGeometry(1, 10, 8)
+    abdomen.scale(0.045, 0.045, 0.3)
+    abdomen.translate(0, 0, -0.16)
+    const thorax = new THREE.SphereGeometry(1, 10, 8)
+    thorax.scale(0.06, 0.055, 0.1)
+    thorax.translate(0, 0, 0.08)
+    const head = new THREE.SphereGeometry(0.045, 8, 6)
+    head.translate(0, 0.01, 0.2)
+    const parts: THREE.BufferGeometry[] = [abdomen, thorax, head]
+    for (const s of [-1, 1]) {
+      const from = new THREE.Vector3(s * 0.02, 0.03, 0.22)
+      const to = new THREE.Vector3(s * 0.16, 0.14, 0.5)
+      const antenna = new THREE.CylinderGeometry(0.006, 0.006, from.distanceTo(to), 4, 1)
+      antenna.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), to.clone().sub(from).normalize()))
+      const mid = from.clone().add(to).multiplyScalar(0.5)
+      antenna.translate(mid.x, mid.y, mid.z)
+      const club = new THREE.SphereGeometry(0.018, 6, 4)
+      club.translate(to.x, to.y, to.z)
+      parts.push(antenna, club)
+    }
+    return mergeGeometries(parts) ?? abdomen
+  }
+
+  // tileable fbm baked once (R: 4-octave fbm, G: fine single octave) so the full-screen ground and
+  // mist layers sample a texture instead of evaluating noise per pixel
+  const bakeNoise = () => {
+    const N = 256
+    const rng = styleRng(7919)
+    const octave = (period: number) => {
+      const grid = Float32Array.from({ length: period * period }, () => rng.next())
+      return (x: number, y: number) => {
+        const fx = (x / N) * period
+        const fy = (y / N) * period
+        const x0 = Math.floor(fx)
+        const y0 = Math.floor(fy)
+        const sx = (fx - x0) * (fx - x0) * (3 - 2 * (fx - x0))
+        const sy = (fy - y0) * (fy - y0) * (3 - 2 * (fy - y0))
+        const g = (i: number, j: number) => grid[(j % period) * period + (i % period)]
+        const a = g(x0, y0)
+        const b = g(x0 + 1, y0)
+        const c = g(x0, y0 + 1)
+        const d = g(x0 + 1, y0 + 1)
+        return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
+      }
+    }
+    const o = [octave(8), octave(16), octave(32), octave(64)]
+    const data = new Uint8Array(N * N * 4)
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const fine = o[3](x, y)
+        const v = (o[0](x, y) * 0.5 + o[1](x, y) * 0.25 + o[2](x, y) * 0.125 + fine * 0.0625) / 0.9375
+        const i = (y * N + x) * 4
+        data[i] = Math.round(v * 255)
+        data[i + 1] = Math.round(fine * 255)
+        data[i + 3] = 255
+      }
+    }
+    const tex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat)
+    tex.wrapS = THREE.RepeatWrapping
+    tex.wrapT = THREE.RepeatWrapping
+    tex.magFilter = THREE.LinearFilter
+    tex.minFilter = THREE.LinearMipmapLinearFilter
+    tex.generateMipmaps = true
+    tex.needsUpdate = true
+    return tex
+  }
+  let noiseTex: THREE.DataTexture | null = null
+
+  const wanderTarget = (f: Fly, t: number, out: THREE.Vector3) =>
+    out.set(
+      Math.sin(t * f.fx + f.sx) * 6.2 + Math.sin(t * 0.37 + f.sx * 3) * 1.2,
+      1.45 + Math.sin(t * f.fy + f.sy) * 0.85,
+      Math.cos(t * f.fz + f.sz) * 6.2 + Math.cos(t * 0.31 + f.sz * 2) * 1.2,
+    )
+
+  const releaseFlower = (f: Fly) => {
+    if (f.flower >= 0) flowers[f.flower].taken = false
+    f.flower = -1
+    f.mode = WANDER
+  }
+  const takeOff = (f: Fly) => {
+    releaseFlower(f)
+    f.vel.set((Math.random() - 0.5) * 0.8, 1.1 + Math.random() * 0.5, (Math.random() - 0.5) * 0.8)
+    f.gliding = false
+  }
+
+  const spawnDust = (x: number, y: number, z: number, vx: number, vy: number, vz: number, r: number, g: number, b: number) => {
+    if (!dust) return
+    const i = dustHead
+    dustHead = (dustHead + 1) % DUST
+    ;(dust.geometry.getAttribute('position') as THREE.BufferAttribute).setXYZ(i, x, y, z)
+    const col = dust.geometry.getAttribute('aColor') as THREE.BufferAttribute
+    col.setXYZ(i, r, g, b)
+    col.needsUpdate = true
+    ;(dust.geometry.getAttribute('aLife') as THREE.BufferAttribute).setX(i, 1)
+    dustVel[i * 3] = vx
+    dustVel[i * 3 + 1] = vy
+    dustVel[i * 3 + 2] = vz
+  }
+
+  return {
+    id: 'butterfly',
+    label: 'Butterfly',
+    hint: 'Moonlit meadow of glowing wings',
+    bloom: { base: 0.34, pulse: 0.2 },
+    mount(scene, camera, palette) {
+      cameraRef = camera
+      camera.position.set(0, 1.5, 9.6)
+      camera.lookAt(0, 1.6, 0)
+      scene.fog = new THREE.FogExp2(fogColor, FOG)
+      scene.background = fogColor.clone()
+      group = new THREE.Group()
+      const rng = styleRng(palette.seed)
+      colorFrom(palette.a, uA)
+      colorFrom(palette.b, uB)
+      colorFrom(palette.c, uC)
+      shared.uScale.value = window.innerHeight * Math.min(window.devicePixelRatio, 2) * 0.5
+      shared.uBlink.value = 0
+      swirlTimer = 22
+      swirlActive = false
+      swirlView = 0
+      updraft = 0
+      beatGlow = 0
+      dustHead = 0
+      dustVel.fill(0)
+
+      // sky dome: dusk gradient, wheeling stars, moon and a distant tree line
+      const skyMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: { ...shared, uMoonDir: { value: moonDir } },
+        vertexShader: `
+          varying vec3 vDir;
+          void main() {
+            vDir = position;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime, uEnergy, uBeat;
+          uniform vec3 uMoonDir;
+          varying vec3 vDir;
+          ${glslCommon}
+          float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+          void main() {
+            vec3 d = normalize(vDir);
+            float el = d.y;
+            float az = atan(d.z, d.x);
+            vec2 dxz = d.xz / max(length(d.xz), 0.0001);
+            vec3 col = mix(vec3(0.07, 0.036, 0.085), vec3(0.028, 0.02, 0.06), smoothstep(0.0, 0.2, el));
+            col = mix(col, vec3(0.006, 0.008, 0.026), smoothstep(0.18, 0.75, el));
+            // last light of the sunset, opposite the moon, tinted by the music palette
+            float sunSide = 0.5 + 0.5 * dot(dxz, -normalize(uMoonDir.xz));
+            float dusk = exp(-max(el, 0.0) * 6.0) * pow(sunSide, 2.5);
+            col += mix(neon(uA), neon(uC), 0.4) * dusk * (0.1 + uEnergy * 0.06);
+
+            if (el > 0.02) {
+              float sr = uTime * 0.004;
+              vec3 sd = vec3(d.x * cos(sr) - d.z * sin(sr), d.y, d.x * sin(sr) + d.z * cos(sr));
+              float h = hash3(floor(sd * 170.0));
+              vec3 sf = fract(sd * 170.0) - 0.5;
+              float star = step(0.9965, h) * (1.0 - smoothstep(0.08, 0.32, length(sf)));
+              float tw = 0.55 + 0.45 * sin(uTime * (1.5 + h * 3.0) + h * 40.0);
+              vec3 starCol = mix(vec3(0.85, 0.9, 1.0), neon(mix(uA, uC, fract(h * 7.0))), uBeat * 0.8);
+              col += starCol * star * tw * smoothstep(0.04, 0.25, el) * 1.3;
+
+              float mm = dot(d, uMoonDir);
+              col += vec3(0.55, 0.6, 0.8) * (exp((mm - 1.0) * 900.0) * 0.4 + exp((mm - 1.0) * 60.0) * 0.08 + exp((mm - 1.0) * 8.0) * 0.03);
+              if (mm > 0.999) {
+                float disc = smoothstep(0.99905, 0.99925, mm);
+                vec3 md = d - uMoonDir * mm;
+                float crater = noise(md.xy * 900.0 + 3.0) * 0.5 + noise(md.zy * 2200.0) * 0.3;
+                col = mix(col, vec3(1.0, 0.97, 0.9) * (0.85 - crater * 0.35) * 1.6, disc);
+              }
+            }
+            col += vec3(0.05, 0.05, 0.08) * exp(-abs(el) * 22.0) * 0.5;
+            if (el > 0.22) {
+              gl_FragColor = vec4(col, 1.0);
+              return;
+            }
+
+            // hazy far hills, then the near tree line: irregular crowns of mixed sizes, sparse pines and a
+            // leafy noise edge (everything sampled on the unit circle so it wraps without a seam)
+            float az01 = az / 6.2831853 + 0.5;
+            float far = 0.03 + fbm(dxz * 0.9 + 9.0) * 0.09 + noise(dxz * 90.0) * 0.004;
+            col = mix(col, mix(col, uFogColor * 1.6 + vec3(0.02, 0.018, 0.04), 0.75), smoothstep(far + 0.002, far - 0.002, el));
+
+            float ridge = 0.012 + fbm(dxz * 1.3 + 4.0) * 0.07;
+            float line = ridge;
+            for (int k = 0; k < 2; k++) {
+              float cells = k == 0 ? 120.0 : 230.0;
+              float ta = az01 * cells + float(k) * 0.37;
+              float id = floor(ta);
+              float th = hash(vec2(id, 1.7 + float(k) * 3.1));
+              float center = 0.5 + (hash(vec2(id, 8.3 + float(k))) - 0.5) * 0.5;
+              float w = 0.35 + th * 0.4;
+              float x = (fract(ta) - center) / w;
+              float hgt = (k == 0 ? 0.014 + th * 0.034 : 0.008 + th * 0.02) * step(0.12, th);
+              line = max(line, ridge + hgt * sqrt(max(0.0, 1.0 - x * x)));
+            }
+            float tb = az01 * 310.0;
+            float tg = fract(tb) * 2.0 - 1.0;
+            float th2 = hash(vec2(floor(tb), 5.3));
+            line = max(line, ridge + (0.025 + th2 * 0.05) * max(0.0, 1.0 - abs(tg) * 1.1) * step(0.72, th2));
+            line += (noise(dxz * 260.0) - 0.5) * 0.004 + (noise(dxz * 700.0) - 0.5) * 0.002;
+            float tree = smoothstep(line + 0.0022, line - 0.0022, el);
+            vec3 sil = uFogColor + vec3(0.03, 0.035, 0.06) * smoothstep(line - 0.012, line, el) * (1.0 - sunSide) * 0.4;
+            col = mix(col, sil, tree);
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      sky = new THREE.Mesh(new THREE.SphereGeometry(150, 48, 24), skyMat)
+      // drawn after the ground and grass so depth testing skips the sky pixels they cover
+      sky.renderOrder = 1
+      sky.frustumCulled = false
+      group.add(sky)
+
+      noiseTex = bakeNoise()
+      const groundMat = new THREE.ShaderMaterial({
+        uniforms: { ...shared, uNoise: { value: noiseTex } },
+        vertexShader: `
+          varying vec3 vWorld;
+          void main() {
+            vec4 w = modelMatrix * vec4(position, 1.0);
+            vWorld = w.xyz;
+            gl_Position = projectionMatrix * viewMatrix * w;
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D uNoise;
+          varying vec3 vWorld;
+          ${glslCommon}
+          void main() {
+            vec2 p = vWorld.xz;
+            float n = texture2D(uNoise, p * 0.0375).r;
+            float n2 = texture2D(uNoise, p * 0.048).g;
+            vec3 col = mix(vec3(0.004, 0.009, 0.007), vec3(0.014, 0.028, 0.02), n) * (0.75 + n2 * 0.5);
+            col += vec3(0.02, 0.024, 0.04) * smoothstep(0.6, 0.95, n2) * 0.25;
+            col = mix(col, uFogColor, fogAmt(vWorld));
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), groundMat)
+      ground.rotation.x = -Math.PI / 2
+      ground.frustumCulled = false
+      group.add(ground)
+
+      // flowers grow in patches; each listens to its own slice of the spectrum
+      const patches = Array.from({ length: 7 }, () => {
+        const a = rng.next() * Math.PI * 2
+        const r = Math.sqrt(rng.next()) * 5.5
+        return { x: Math.cos(a) * r, z: Math.sin(a) * r, r: rng.range(1.3, 2.6), hue: rng.pick(PICKS) }
+      })
+      for (let i = 0; i < FLOWERS; i++) {
+        const pc = patches[i % patches.length]
+        const a = rng.next() * Math.PI * 2
+        const r = Math.sqrt(rng.next()) * pc.r
+        flowers.push({
+          pos: new THREE.Vector3(pc.x + Math.cos(a) * r, rng.range(0.45, 0.95), pc.z + Math.sin(a) * r),
+          band: 2 + Math.floor(rng.next() * 40),
+          glow: 0.2,
+          hue: Math.min(2, Math.max(0, pc.hue + rng.range(-0.1, 0.1))),
+          taken: false,
+        })
+      }
+
+      // grass blades + flower stems share one swaying instanced mesh
+      const grassMat = new THREE.ShaderMaterial({
+        side: THREE.DoubleSide,
+        uniforms: { ...shared },
+        vertexShader: `
+          uniform float uTime;
+          varying float vH;
+          varying float vTone;
+          varying vec3 vWorld;
+          ${glslCommon}
+          void main() {
+            float h = uv.y;
+            vec3 p = position;
+            p.x *= 0.08 * (1.0 - h * 0.85);
+            vec4 world = modelMatrix * instanceMatrix * vec4(p, 1.0);
+            world.xz += gust(world.xz, uTime) * h * h;
+            vH = h;
+            vTone = hash(floor(instanceMatrix[3].xz * 10.0));
+            vWorld = world.xyz;
+            gl_Position = projectionMatrix * viewMatrix * world;
+          }
+        `,
+        fragmentShader: `
+          uniform float uEnergy;
+          varying float vH;
+          varying float vTone;
+          varying vec3 vWorld;
+          ${glslCommon}
+          void main() {
+            vec3 tip = mix(vec3(0.02, 0.055, 0.04), vec3(0.04, 0.06, 0.03), vTone);
+            vec3 col = mix(vec3(0.003, 0.008, 0.006), tip, vH);
+            col += vec3(0.05, 0.06, 0.1) * pow(vH, 3.0) * 0.35;
+            col += neon(mix(uA, uC, vTone)) * pow(vH, 5.0) * (0.015 + uEnergy * 0.03);
+            col = mix(col, uFogColor, fogAmt(vWorld));
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `,
+      })
+      const blade = new THREE.PlaneGeometry(1, 1, 1, 4)
+      blade.translate(0, 0.5, 0)
+      const grass = new THREE.InstancedMesh(blade, grassMat, GRASS + FLOWERS)
+      for (let i = 0; i < GRASS; i++) {
+        const a = rng.next() * Math.PI * 2
+        const r = Math.sqrt(rng.next()) * 19
+        dummy.position.set(Math.cos(a) * r, 0, Math.sin(a) * r)
+        dummy.rotation.set(rng.range(-0.2, 0.2), rng.next() * Math.PI, rng.range(-0.2, 0.2))
+        dummy.scale.set(1, rng.range(0.22, 0.72), 1)
+        dummy.updateMatrix()
+        grass.setMatrixAt(i, dummy.matrix)
+      }
+      for (let i = 0; i < FLOWERS; i++) {
+        const fl = flowers[i]
+        dummy.position.set(fl.pos.x, 0, fl.pos.z)
+        dummy.rotation.set(0, rng.next() * Math.PI, 0)
+        dummy.scale.set(0.6, fl.pos.y, 1)
+        dummy.updateMatrix()
+        grass.setMatrixAt(GRASS + i, dummy.matrix)
+      }
+      grass.frustumCulled = false
+      group.add(grass)
+
+      const headMat = new THREE.ShaderMaterial({
+        transparent: true,
+        side: THREE.DoubleSide,
+        forceSinglePass: true,
+        uniforms: { ...shared },
+        vertexShader: `
+          uniform float uTime;
+          attribute float aGlow;
+          attribute vec3 aFlower;
+          varying vec2 vP;
+          varying float vGlow;
+          varying vec3 vFlower;
+          varying vec3 vWorld;
+          ${glslCommon}
+          void main() {
+            vec3 p = position;
+            float r = length(p.xz);
+            // petals open with the music and cup closed when it is quiet
+            float open = mix(0.5, 1.0, clamp(aGlow, 0.0, 1.0));
+            p.xz *= open;
+            p.y += r * r * (1.1 - open) * 0.8;
+            mat4 m = modelMatrix * instanceMatrix;
+            vec4 world = m * vec4(p, 1.0);
+            world.xz += gust((m * vec4(0.0, 0.0, 0.0, 1.0)).xz, uTime);
+            vP = position.xz;
+            vGlow = aGlow;
+            vFlower = aFlower;
+            vWorld = world.xyz;
+            gl_Position = projectionMatrix * viewMatrix * world;
+          }
+        `,
+        fragmentShader: `
+          varying vec2 vP;
+          varying float vGlow;
+          varying vec3 vFlower;
+          varying vec3 vWorld;
+          ${glslCommon}
+          void main() {
+            float r = length(vP);
+            float ang = atan(vP.y, vP.x);
+            float n = vFlower.y;
+            float petal = 0.5 + 0.5 * pow(abs(cos(ang * n * 0.5 + vFlower.z * 6.0)), 0.7);
+            float mask = 1.0 - smoothstep(petal - 0.05, petal + 0.01, r);
+            if (mask < 0.02) discard;
+            vec3 pc = neon(pickCol(vFlower.x));
+            float streak = 0.8 + 0.2 * cos(ang * n * 3.0);
+            vec3 col = pc * (0.18 + vGlow * 1.5) * mix(0.55, 1.1, r / petal) * streak;
+            float heart = 1.0 - smoothstep(0.1, 0.19, r);
+            col = mix(col, vec3(1.0, 0.9, 0.62) * (0.4 + vGlow * 1.6), heart);
+            col = mix(col, uFogColor, fogAmt(vWorld));
+            gl_FragColor = vec4(col, mask);
+          }
+        `,
+      })
+      const headGeo = new THREE.CircleGeometry(1, 36)
+      headGeo.rotateX(-Math.PI / 2)
+      const flowerAttr = new THREE.InstancedBufferAttribute(new Float32Array(FLOWERS * 3), 3)
+      headGlow = new THREE.InstancedBufferAttribute(new Float32Array(FLOWERS), 1)
+      headGlow.setUsage(THREE.DynamicDrawUsage)
+      headGeo.setAttribute('aFlower', flowerAttr)
+      headGeo.setAttribute('aGlow', headGlow)
+      const heads = new THREE.InstancedMesh(headGeo, headMat, FLOWERS)
+      const haloPos = new Float32Array(FLOWERS * 3)
+      const haloHue = new Float32Array(FLOWERS)
+      for (let i = 0; i < FLOWERS; i++) {
+        const fl = flowers[i]
+        dummy.position.copy(fl.pos)
+        dummy.rotation.set(rng.range(-0.45, 0.45), rng.next() * Math.PI * 2, rng.range(-0.45, 0.45))
+        dummy.scale.setScalar(rng.range(0.13, 0.22))
+        dummy.updateMatrix()
+        heads.setMatrixAt(i, dummy.matrix)
+        flowerAttr.setXYZ(i, fl.hue, rng.pick([5, 5, 6, 8]), rng.next())
+        haloPos.set([fl.pos.x, fl.pos.y + 0.02, fl.pos.z], i * 3)
+        haloHue[i] = fl.hue
+      }
+      heads.frustumCulled = false
+      group.add(heads)
+
+      const pointFrag = (falloff: string) => `
+        varying vec3 vCol;
+        void main() {
+          float r = length(gl_PointCoord - 0.5) * 2.0;
+          float a = exp(-r * r * ${falloff}) * (1.0 - smoothstep(0.85, 1.0, r));
+          gl_FragColor = vec4(vCol, a);
+        }
+      `
+      const haloGeo = new THREE.BufferGeometry()
+      haloGeo.setAttribute('position', new THREE.BufferAttribute(haloPos, 3))
+      haloGeo.setAttribute('aHue', new THREE.BufferAttribute(haloHue, 1))
+      haloGlow = new THREE.BufferAttribute(new Float32Array(FLOWERS), 1)
+      haloGlow.setUsage(THREE.DynamicDrawUsage)
+      haloGeo.setAttribute('aGlow', haloGlow)
+      const halos = new THREE.Points(
+        haloGeo,
+        new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          uniforms: { ...shared },
+          vertexShader: `
+            uniform float uTime, uScale;
+            attribute float aGlow;
+            attribute float aHue;
+            varying vec3 vCol;
+            ${glslCommon}
+            void main() {
+              vec3 p = position;
+              p.xz += gust(p.xz, uTime);
+              vec4 mv = modelViewMatrix * vec4(p, 1.0);
+              gl_PointSize = (0.45 + aGlow * 0.9) * uScale / max(-mv.z, 0.1);
+              gl_Position = projectionMatrix * mv;
+              vCol = neon(pickCol(aHue)) * (0.06 + aGlow * 0.3) * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
+            }
+          `,
+          fragmentShader: pointFrag('4.0'),
+        }),
+      )
+      halos.frustumCulled = false
+      group.add(halos)
+
+      const ffPos = new Float32Array(FIREFLIES * 3)
+      const ffPhase = new Float32Array(FIREFLIES)
+      for (let i = 0; i < FIREFLIES; i++) {
+        const a = rng.next() * Math.PI * 2
+        const r = Math.sqrt(rng.next()) * 18
+        ffPos.set([Math.cos(a) * r, rng.range(0.3, 2.8), Math.sin(a) * r], i * 3)
+        ffPhase[i] = rng.next()
+      }
+      const ffGeo = new THREE.BufferGeometry()
+      ffGeo.setAttribute('position', new THREE.BufferAttribute(ffPos, 3))
+      ffGeo.setAttribute('aPhase', new THREE.BufferAttribute(ffPhase, 1))
+      const fireflies = new THREE.Points(
+        ffGeo,
+        new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          uniforms: { ...shared },
+          vertexShader: `
+            uniform float uTime, uBlink, uScale;
+            attribute float aPhase;
+            varying vec3 vCol;
+            ${glslCommon}
+            void main() {
+              vec3 p = position + vec3(sin(uTime * 0.3 + aPhase * 6.28) * 0.9, sin(uTime * 0.5 + aPhase * 12.0) * 0.35, cos(uTime * 0.27 + aPhase * 9.0) * 0.9);
+              vec4 mv = modelViewMatrix * vec4(p, 1.0);
+              float blink = pow(max(0.0, sin(uBlink * (0.9 + aPhase * 1.3) + aPhase * 40.0)), 6.0);
+              gl_PointSize = (0.07 + blink * 0.09) * uScale / max(-mv.z, 0.1);
+              gl_Position = projectionMatrix * mv;
+              vCol = mix(vec3(0.85, 1.0, 0.45), neon(uC), 0.3) * (0.05 + blink * 1.6) * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
+            }
+          `,
+          fragmentShader: pointFrag('5.0'),
+        }),
+      )
+      fireflies.frustumCulled = false
+      group.add(fireflies)
+
+      // low drifting ground mist in two layers
+      for (const layer of [0, 1]) {
+        const mist = new THREE.Mesh(
+          new THREE.PlaneGeometry(120, 120),
+          new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            uniforms: { ...shared, uLayer: { value: layer }, uNoise: { value: noiseTex } },
+            vertexShader: `
+              varying vec3 vWorld;
+              void main() {
+                vec4 w = modelMatrix * vec4(position, 1.0);
+                vWorld = w.xyz;
+                gl_Position = projectionMatrix * viewMatrix * w;
+              }
+            `,
+            fragmentShader: `
+              uniform float uTime, uLayer;
+              uniform sampler2D uNoise;
+              varying vec3 vWorld;
+              ${glslCommon}
+              void main() {
+                vec2 p = vWorld.xz * (0.06 + uLayer * 0.05) + vec2(uTime * 0.015, uTime * 0.01 * (1.0 + uLayer));
+                float n = texture2D(uNoise, p * 0.125).r + texture2D(uNoise, p * 0.29 - uTime * 0.0015 + 0.37).r * 0.35;
+                float m = smoothstep(0.5, 0.95, n);
+                float a = m * smoothstep(1.5, 6.0, distance(vWorld, cameraPosition)) * (1.0 - fogAmt(vWorld) * 0.7) * (0.2 - uLayer * 0.08);
+                gl_FragColor = vec4(mix(vec3(0.08, 0.09, 0.13), neon(uB) * 0.12, 0.3), a);
+              }
+            `,
+          }),
+        )
+        mist.rotation.x = -Math.PI / 2
+        mist.position.y = layer === 0 ? 0.35 : 0.9
+        mist.frustumCulled = false
+        group.add(mist)
+      }
+
+      // butterflies: instanced wings with procedural patterns, flapping in the vertex shader
+      const wingMat = new THREE.ShaderMaterial({
+        transparent: true,
+        side: THREE.DoubleSide,
+        forceSinglePass: true,
+        uniforms: { ...shared },
+        vertexShader: `
+          attribute float aSide;
+          attribute vec2 aWingUv;
+          attribute vec2 aWing;
+          attribute vec2 aGF;
+          attribute vec4 aStyle;
+          varying vec2 vW;
+          varying vec3 vN;
+          varying vec3 vWorld;
+          varying vec4 vStyle;
+          varying vec2 vGF;
+          void main() {
+            float r = abs(position.x);
+            float th = aWing.x + aWing.y * r;
+            vec3 p = vec3(aSide * r * cos(th), r * sin(th), position.z);
+            mat4 m = modelMatrix * instanceMatrix;
+            vec4 world = m * vec4(p, 1.0);
+            vN = normalize(mat3(m) * vec3(-aSide * sin(th), cos(th), 0.0));
+            vW = aWingUv;
+            vWorld = world.xyz;
+            vStyle = aStyle;
+            vGF = aGF;
+            gl_Position = projectionMatrix * viewMatrix * world;
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime;
+          varying vec2 vW;
+          varying vec3 vN;
+          varying vec3 vWorld;
+          varying vec4 vStyle;
+          varying vec2 vGF;
+          ${glslCommon}
+          // wings need deeper colour than the shared neon(): tone mapping bleaches bright pastels to white
+          vec3 wingHue(vec3 c) {
+            float l = dot(c, vec3(0.299, 0.587, 0.114));
+            vec3 s = max(mix(vec3(l), c, 2.6), vec3(0.0));
+            return s * (0.5 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
+          }
+          float ell(vec2 p, vec2 c, vec2 r, float rot) {
+            vec2 q = p - c;
+            float cs = cos(rot);
+            float sn = sin(rot);
+            q = vec2(cs * q.x + sn * q.y, -sn * q.x + cs * q.y);
+            return length(q / r) - 1.0;
+          }
+          void main() {
+            float kind = floor(vStyle.x + 0.5);
+            vec2 p = vW;
+            float dF = ell(p, vec2(0.5, -0.32), vec2(0.6, 0.3), -0.6);
+            float dH = ell(p, vec2(0.38, 0.3), vec2(0.44, 0.34), 0.75);
+            dH += 0.05 * sin(atan(p.y - 0.3, p.x - 0.38) * 9.0) * step(0.0, p.y);
+            float d = min(dF, dH);
+            if (kind > 1.5 && kind < 2.5) d = min(d, ell(p, vec2(0.52, 0.72), vec2(0.24, 0.055), 1.2));
+            float edgeA = 1.0 - smoothstep(-0.05, 0.02, d);
+            if (edgeA < 0.03) discard;
+
+            vec3 c1 = wingHue(pickCol(vStyle.y));
+            vec3 c2 = wingHue(pickCol(vStyle.z));
+            float fres = pow(1.0 - abs(dot(normalize(vN), normalize(cameraPosition - vWorld))), 2.0);
+            float rr = length(p);
+            float ang = atan(p.y, p.x);
+            float vv = abs(fract(ang * 2.2 + 0.5) - 0.5);
+            float vein = (1.0 - smoothstep(0.012, 0.03, rr * vv * 0.5)) * smoothstep(0.05, 0.15, rr);
+            float margin = smoothstep(-0.32, -0.12, d);
+            float outline = smoothstep(-0.12, -0.04, d);
+            vec2 dc = vec2(fract(ang * 5.0) - 0.5, (d + 0.16) * 3.2);
+            float dots = 1.0 - smoothstep(0.1, 0.17, length(dc));
+            float lum = 0.25 + vGF.x * 1.05 + vGF.y * 2.0;
+            float sheen = 0.5 + 0.5 * sin(rr * 7.0 - uTime * 1.5 + fres * 4.0 + vStyle.w * 6.28);
+            vec3 dark = vec3(0.012, 0.01, 0.018) + c2 * fres * 0.06;
+            vec3 col;
+            float op = edgeA;
+            if (kind < 0.5) {
+              // morpho: iridescent core, dark margin, white dots, neon rim
+              vec3 core = wingHue(mix(c1, c2, clamp(fres * 1.2 + rr * 0.35, 0.0, 1.0))) * (0.75 + 0.5 * sheen);
+              col = mix(core * lum, dark, margin);
+              col += vec3(0.9) * dots * margin * (1.0 - outline) * (0.35 + vGF.x * 0.6);
+              col += c2 * outline * (0.4 + lum * 0.7);
+            } else if (kind < 1.5) {
+              // monarch: glowing cells between dark veins, dotted margin
+              vec3 core = wingHue(mix(c1, c1 * 0.65 + c2 * 0.35, clamp(rr, 0.0, 1.0))) * lum * (0.85 + 0.3 * sheen);
+              col = mix(core, dark, max(vein * 0.9, margin));
+              col += vec3(1.0, 0.97, 0.9) * dots * margin * (0.45 + vGF.x * 0.6);
+            } else if (kind < 2.5) {
+              // swallowtail: bold stripes, lunules and tails
+              float stripe = smoothstep(0.35, 0.5, abs(fract(p.x * 3.0 - p.y * 1.4) - 0.5) * 2.0);
+              col = mix(c1 * lum * (0.85 + 0.3 * sheen), dark, stripe * 0.85);
+              col = mix(col, dark, margin * 0.8);
+              col += c2 * dots * margin * (0.5 + lum * 0.6);
+            } else {
+              // glasswing: clear panes, glowing veins and rim
+              col = c1 * (0.1 * lum + fres * 0.25);
+              op *= mix(0.3, 1.0, max(margin, vein));
+              col = mix(col, c2 * (0.5 + lum * 0.9), vein * 0.8);
+              col = mix(col, dark + c1 * outline * lum, margin);
+            }
+            if (kind < 0.5 || kind > 1.5) {
+              float ed = length(p - vec2(0.52, 0.42)) / 0.12;
+              float eye = (1.0 - smoothstep(0.92, 1.05, ed)) * step(0.0, p.y);
+              vec3 eyeCol = mix(vec3(0.015), c2 * (0.8 + lum), 1.0 - smoothstep(0.6, 0.75, ed));
+              eyeCol = mix(eyeCol, vec3(0.01), 1.0 - smoothstep(0.38, 0.5, ed));
+              eyeCol = mix(eyeCol, vec3(1.0) * (0.8 + vGF.y * 2.0), 1.0 - smoothstep(0.12, 0.2, ed));
+              col = mix(col, eyeCol, eye);
+              op = max(op, eye * edgeA);
+            }
+            col = mix(col, uFogColor, fogAmt(vWorld));
+            gl_FragColor = vec4(col, op);
+          }
+        `,
+      })
+      const wingGeo = buildWingGeometry()
+      wingAttr = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 2), 2)
+      wingAttr.setUsage(THREE.DynamicDrawUsage)
+      glowAttr = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 2), 2)
+      glowAttr.setUsage(THREE.DynamicDrawUsage)
+      const styleAttr = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 4), 4)
+      wingGeo.setAttribute('aWing', wingAttr)
+      wingGeo.setAttribute('aGF', glowAttr)
+      wingGeo.setAttribute('aStyle', styleAttr)
+      wings = new THREE.InstancedMesh(wingGeo, wingMat, COUNT)
+      wings.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      wings.frustumCulled = false
+      bodies = new THREE.InstancedMesh(buildBodyGeometry(), new THREE.MeshBasicMaterial({ color: 0x0b0912 }), COUNT)
+      bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      bodies.frustumCulled = false
+      group.add(bodies, wings)
+
+      for (let i = 0; i < COUNT; i++) {
+        const k = rng.next()
+        const kind = k < 0.3 ? 0 : k < 0.6 ? 1 : k < 0.85 ? 2 : 3
+        const p1 = rng.int(PICKS.length)
+        const pick = PICKS[p1]
+        styleAttr.setXYZW(i, kind, pick, PICKS[(p1 + 1 + rng.int(PICKS.length - 1)) % PICKS.length], rng.next())
+        flies.push({
+          pos: new THREE.Vector3(rng.range(-6, 6), rng.range(0.8, 2.6), rng.range(-6, 6)),
+          vel: new THREE.Vector3(rng.range(-0.5, 0.5), 0, rng.range(-0.5, 0.5)),
+          mode: WANDER,
+          flower: -1,
+          perchT: 0,
+          phase: rng.next() * Math.PI * 2,
+          rate: rng.range(2.8, 3.8),
+          speed: rng.range(0.9, 1.4),
+          scale: i < 4 ? rng.range(0.4, 0.46) : rng.range(0.22, 0.34),
+          heading: rng.next() * Math.PI * 2,
+          bank: 0,
+          theta: 0.5,
+          flex: 0,
+          flapAmp: 1,
+          gliding: false,
+          glideT: rng.range(1, 4),
+          glow: 0.3,
+          flash: 0,
+          flashDelay: -1,
+          flashAmt: 0,
+          emit: rng.next() * 0.1,
+          band: 2 + Math.floor(rng.next() * 38),
+          pick,
+          swirl: false,
+          swirlAng: 0,
+          swirlLayer: 0,
+          fx: rng.range(0.04, 0.11),
+          fy: rng.range(0.08, 0.2),
+          fz: rng.range(0.04, 0.11),
+          sx: rng.next() * Math.PI * 2,
+          sy: rng.next() * Math.PI * 2,
+          sz: rng.next() * Math.PI * 2,
+          seed: rng.next() * 10,
+        })
+      }
+      // a dozen start the scene already resting on flowers
+      for (let i = 0; i < 12; i++) {
+        const f = flies[COUNT - 1 - i]
+        const fi = (i * 13) % FLOWERS
+        f.mode = PERCH
+        f.flower = fi
+        f.perchT = rng.range(2, 10)
+        f.pos.copy(flowers[fi].pos)
+        flowers[fi].taken = true
+      }
+
+      // wing dust, pollen and updraft sparkles share one pooled particle system
+      const dustGeo = new THREE.BufferGeometry()
+      dustGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(DUST * 3), 3))
+      dustGeo.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(DUST * 3), 3))
+      dustGeo.setAttribute('aLife', new THREE.BufferAttribute(new Float32Array(DUST), 1))
+      dust = new THREE.Points(
+        dustGeo,
+        new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          uniforms: { ...shared },
+          vertexShader: `
+            uniform float uScale;
+            attribute vec3 aColor;
+            attribute float aLife;
+            varying vec3 vCol;
+            ${glslCommon}
+            void main() {
+              if (aLife <= 0.0) {
+                gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+                gl_PointSize = 0.0;
+                vCol = vec3(0.0);
+                return;
+              }
+              vec4 mv = modelViewMatrix * vec4(position, 1.0);
+              gl_PointSize = (0.025 + aLife * 0.05) * uScale / max(-mv.z, 0.1);
+              gl_Position = projectionMatrix * mv;
+              float tw = 0.7 + 0.3 * sin(aLife * 40.0 + position.x * 13.0);
+              vCol = aColor * aLife * tw * (1.0 - fogAmt((modelMatrix * vec4(position, 1.0)).xyz));
+            }
+          `,
+          fragmentShader: pointFrag('6.0'),
+        }),
+      )
+      dust.frustumCulled = false
+      group.add(dust)
+
+      scene.add(group)
+    },
+    update(m, time, dt, palette) {
+      if (!group || !cameraRef || !sky || !wings || !bodies || !wingAttr || !glowAttr || !headGlow || !haloGlow || !dust) return
+      colorFrom(palette.a, uA)
+      colorFrom(palette.b, uB)
+      colorFrom(palette.c, uC)
+      beatGlow = m.beat ? 1 : Math.max(0, beatGlow - dt * 3)
+      shared.uTime.value = time
+      shared.uEnergy.value = m.energy
+      shared.uBeat.value = beatGlow
+      shared.uBlink.value += dt * (1 + m.treble * 0.8)
+
+      // the swirl: most of the swarm spirals up into the moonlight, then drifts back down
+      if (!swirlActive) {
+        swirlTimer -= dt
+        if (swirlTimer <= 0) {
+          swirlActive = true
+          swirlT = 0
+          swirlClock = 0
+          swirlHue = Math.random() * 2
+          for (const f of flies) {
+            if (Math.random() >= 0.72) continue
+            f.swirl = true
+            f.swirlAng = Math.random() * Math.PI * 2
+            f.swirlLayer = Math.random()
+            if (f.mode === PERCH) takeOff(f)
+            else if (f.mode === APPROACH) releaseFlower(f)
+          }
+        }
+      } else {
+        swirlT += dt / 18
+        swirlClock += dt
+        if (swirlT >= 1) {
+          swirlActive = false
+          swirlTimer = 45 + Math.random() * 30
+          for (const f of flies) f.swirl = false
+        }
+      }
+      const swirlRise = swirlActive ? smooth(Math.min(1, swirlT / 0.7)) : 0
+      const swirlOut = swirlActive ? Math.max(0, (swirlT - 0.8) / 0.2) : 0
+      swirlView += ((swirlActive ? 1 - swirlOut : 0) - swirlView) * Math.min(1, dt * 0.8)
+
+      const orbit = time * 0.035
+      const radius = 9.6 + Math.sin(time * 0.05) + swirlView * 1.8
+      cameraRef.position.set(Math.sin(orbit) * radius, 1.45 + Math.sin(time * 0.07) * 0.25 + swirlView * 0.7, Math.cos(orbit) * radius)
+      cameraRef.lookAt(Math.sin(time * 0.04) * 0.8, 1.6 + swirlView * 2.6, Math.cos(time * 0.05) * 0.5)
+      sky.position.copy(cameraRef.position)
+      const cam = cameraRef.position
+
+      // flowers breathe with their spectrum band; a ripple runs through them during the swirl
+      for (let i = 0; i < FLOWERS; i++) {
+        const fl = flowers[i]
+        const spec = m.spectrum[fl.band % m.spectrum.length] ?? 0
+        fl.glow += (0.12 + spec * 1.4 - fl.glow) * Math.min(1, dt * 5)
+        const ripple = swirlView * (0.35 + 0.35 * Math.sin(time * 3 - Math.hypot(fl.pos.x, fl.pos.z) * 1.1))
+        const g = fl.glow + ripple + beatGlow * 0.15
+        headGlow.setX(i, g)
+        haloGlow.setX(i, g)
+      }
+      headGlow.needsUpdate = true
+      haloGlow.needsUpdate = true
+
+      if (m.beat) {
+        // a flash ripples outward through the swarm from one butterfly
+        const origin = flies[Math.floor(Math.random() * COUNT)].pos
+        for (const f of flies) {
+          const d = f.pos.distanceTo(origin)
+          if (d < 10) {
+            f.flashDelay = d * 0.06
+            f.flashAmt = 1 - d / 10
+          }
+        }
+        // the three most open flowers puff pollen
+        let b0 = 0
+        let b1 = 1
+        let b2 = 2
+        for (let i = 3; i < FLOWERS; i++) {
+          const g = flowers[i].glow
+          if (g > flowers[b0].glow) {
+            b2 = b1
+            b1 = b0
+            b0 = i
+          } else if (g > flowers[b1].glow) {
+            b2 = b1
+            b1 = i
+          } else if (g > flowers[b2].glow) b2 = i
+        }
+        for (const fi of [b0, b1, b2]) {
+          const fl = flowers[fi]
+          pickInto(fl.hue, tint)
+          vivid(tint)
+          const gx = fl.pos.x + gustX(fl.pos.x, fl.pos.z, time)
+          const gz = fl.pos.z + gustZ(fl.pos.z, time)
+          for (let k = 0; k < 10; k++) {
+            spawnDust(gx, fl.pos.y + 0.05, gz, (Math.random() - 0.5) * 0.5, 0.4 + Math.random() * 0.7, (Math.random() - 0.5) * 0.5, tint.r * 0.8, tint.g * 0.8, tint.b * 0.8)
+          }
+        }
+      }
+
+      if (swirlActive && swirlView > 0.2) {
+        updraft += dt * 40 * swirlView
+        pickInto(swirlHue, tint)
+        vivid(tint)
+        while (updraft >= 1) {
+          updraft -= 1
+          const a = Math.random() * Math.PI * 2
+          const r = Math.random() * 1.6
+          spawnDust(Math.cos(a) * r, 0.3, Math.sin(a) * r, (Math.random() - 0.5) * 0.2, 1.2 + Math.random(), (Math.random() - 0.5) * 0.2, tint.r * 0.55, tint.g * 0.55, tint.b * 0.55)
+        }
+      }
+
+      let resting = 0
+      for (const f of flies) if (f.mode !== WANDER) resting++
+      const bassRate = 1 + m.bass * 0.3
+      for (let i = 0; i < COUNT; i++) {
+        const f = flies[i]
+        const spec = m.spectrum[f.band % m.spectrum.length] ?? 0
+        f.glow += (0.22 + spec * 1.1 + m.energy * 0.45 - f.glow) * Math.min(1, dt * 6)
+        if (f.flashDelay >= 0) {
+          f.flashDelay -= dt
+          if (f.flashDelay < 0) f.flash = Math.max(f.flash, f.flashAmt)
+        }
+        f.flash = Math.max(0, f.flash - dt * 3.5)
+        const swirling = f.swirl && swirlActive
+        let theta: number
+        let flex = 0
+
+        if (f.mode === PERCH) {
+          const fl = flowers[f.flower]
+          f.pos.set(fl.pos.x + gustX(fl.pos.x, fl.pos.z, time), fl.pos.y + 0.03, fl.pos.z + gustZ(fl.pos.z, time))
+          // resting wings fan slowly open and closed
+          f.phase += dt * 1.4
+          theta = 1.0 + 0.5 * Math.sin(f.phase)
+          f.perchT -= dt
+          dummy.position.copy(f.pos)
+          dummy.rotation.set(-0.08, f.heading, 0)
+          if (f.perchT <= 0 || (m.beat && m.bass > 0.55 && Math.random() < 0.18)) takeOff(f)
+        } else {
+          if (swirling) {
+            const ang = f.swirlAng + swirlClock * (0.8 + f.swirlLayer * 0.5)
+            const rad = 1.3 + f.swirlLayer * 1.7 + (1 - swirlRise) * 2.6
+            desired.set(Math.cos(ang) * rad, 1 + swirlRise * (3.2 + f.swirlLayer * 4.8), Math.sin(ang) * rad)
+            if (swirlOut > 0) desired.lerp(wanderTarget(f, time, tmp), swirlOut)
+          } else if (f.mode === APPROACH) {
+            const fl = flowers[f.flower]
+            desired.set(fl.pos.x + gustX(fl.pos.x, fl.pos.z, time), fl.pos.y + 0.03, fl.pos.z + gustZ(fl.pos.z, time))
+          } else {
+            wanderTarget(f, time, desired)
+          }
+          desired.sub(f.pos)
+          const dist = desired.length()
+          if (f.mode === APPROACH && dist < 0.08) {
+            f.mode = PERCH
+            f.perchT = 4 + Math.random() * 7
+            f.vel.set(0, 0, 0)
+          }
+          let spd = swirling ? 2.6 : f.speed * (1 + m.energy * 0.25)
+          if (f.mode === APPROACH) spd *= Math.min(1, Math.max(0.2, dist / 1.2))
+          desired.multiplyScalar(spd / Math.max(dist, 0.001))
+          if (f.mode === WANDER || dist > 0.6) {
+            desired.x += Math.sin(time * 3.1 + f.seed * 9) * 0.55
+            desired.y += Math.sin(time * 2.3 + f.seed * 5) * 0.45
+            desired.z += Math.cos(time * 2.7 + f.seed * 7) * 0.55
+          }
+          tmp.subVectors(f.pos, cam)
+          const cd = tmp.length()
+          if (cd < 2.8) desired.addScaledVector(tmp, ((2.8 - cd) * 3.5) / Math.max(cd, 0.01))
+          f.vel.lerp(desired, Math.min(1, dt * (swirling ? 2.6 : 1.8)))
+          f.pos.addScaledVector(f.vel, dt)
+          if (f.mode === WANDER && f.pos.y < 0.45) {
+            f.pos.y = 0.45
+            if (f.vel.y < 0) f.vel.y *= -0.5
+          }
+
+          if (f.mode === WANDER && !swirling && resting < COUNT * 0.3 && Math.random() < dt * 0.05) {
+            let best = -1
+            let bestD = Infinity
+            for (let s = 0; s < 8; s++) {
+              const fi = Math.floor(Math.random() * FLOWERS)
+              if (flowers[fi].taken) continue
+              const d = flowers[fi].pos.distanceToSquared(f.pos)
+              if (d < bestD) {
+                bestD = d
+                best = fi
+              }
+            }
+            if (best >= 0) {
+              f.mode = APPROACH
+              f.flower = best
+              f.heading = Math.random() * Math.PI * 2
+              flowers[best].taken = true
+              resting++
+            }
+          }
+
+          // flap, with the occasional glide on still wings
+          f.glideT -= dt
+          if (f.glideT <= 0) {
+            if (f.gliding) {
+              f.gliding = false
+              f.glideT = 1.5 + Math.random() * 3
+            } else if (f.mode === WANDER && !swirling) {
+              f.gliding = true
+              f.glideT = 0.5 + Math.random() * 0.8
+            } else f.glideT = 1
+          }
+          f.flapAmp += ((f.gliding ? 0 : 1) - f.flapAmp) * Math.min(1, dt * 6)
+          f.phase += dt * Math.PI * 2 * f.rate * bassRate * (swirling ? 1.25 : 1)
+          theta = 0.22 * (1 - f.flapAmp) + (0.42 + 0.8 * Math.sin(f.phase)) * f.flapAmp
+          flex = -Math.cos(f.phase) * 0.45 * f.flapAmp
+
+          look.copy(f.vel)
+          const hl = Math.hypot(look.x, look.z)
+          if (hl > 0.05) {
+            const nh = Math.atan2(look.x, look.z)
+            const dh = Math.atan2(Math.sin(nh - f.heading), Math.cos(nh - f.heading))
+            const bankTarget = Math.max(-0.7, Math.min(0.7, (dh / Math.max(dt, 0.001)) * 0.25))
+            f.bank += (bankTarget - f.bank) * Math.min(1, dt * 4)
+            f.heading = nh
+          } else {
+            look.x = Math.sin(f.heading) * 0.05
+            look.z = Math.cos(f.heading) * 0.05
+          }
+          const hl2 = Math.max(hl, 0.05)
+          look.y = Math.max(-hl2 * 0.7, Math.min(hl2 * 0.7, look.y))
+          dummy.position.copy(f.pos)
+          dummy.lookAt(tmp.copy(f.pos).add(look))
+          dummy.rotateZ(f.bank)
+          dummy.position.y -= Math.cos(f.phase) * 0.1 * f.scale * f.flapAmp
+
+          f.emit -= dt
+          if (f.emit <= 0) {
+            f.emit = swirling ? 0.035 : 0.075
+            pickInto(f.pick, tint)
+            vivid(tint)
+            const k = 0.25 + f.glow * 0.45 + f.flash * 0.6
+            spawnDust(f.pos.x, f.pos.y, f.pos.z, (Math.random() - 0.5) * 0.12, -0.08 - Math.random() * 0.1, (Math.random() - 0.5) * 0.12, tint.r * k, tint.g * k, tint.b * k)
+          }
+        }
+
+        f.theta += (theta - f.theta) * Math.min(1, dt * 30)
+        f.flex += (flex - f.flex) * Math.min(1, dt * 30)
+        dummy.scale.setScalar(f.scale)
+        dummy.updateMatrix()
+        wings.setMatrixAt(i, dummy.matrix)
+        bodies.setMatrixAt(i, dummy.matrix)
+        wingAttr.setXY(i, f.theta, f.flex)
+        glowAttr.setXY(i, f.glow, f.flash)
+      }
+      wings.instanceMatrix.needsUpdate = true
+      bodies.instanceMatrix.needsUpdate = true
+      wingAttr.needsUpdate = true
+      glowAttr.needsUpdate = true
+
+      const dp = dust.geometry.getAttribute('position') as THREE.BufferAttribute
+      const dl = dust.geometry.getAttribute('aLife') as THREE.BufferAttribute
+      const pa = dp.array as Float32Array
+      const la = dl.array as Float32Array
+      const decay = dt / 1.6
+      const drag = 1 - Math.min(1, dt * 0.4)
+      for (let i = 0; i < DUST; i++) {
+        if (la[i] <= 0) continue
+        la[i] = Math.max(0, la[i] - decay)
+        const ix = i * 3
+        dustVel[ix] *= drag
+        dustVel[ix + 1] = dustVel[ix + 1] * drag - 0.04 * dt
+        dustVel[ix + 2] *= drag
+        pa[ix] += dustVel[ix] * dt
+        pa[ix + 1] += dustVel[ix + 1] * dt
+        pa[ix + 2] += dustVel[ix + 2] * dt
+      }
+      dp.needsUpdate = true
+      dl.needsUpdate = true
+    },
+    resize(_w, h) {
+      shared.uScale.value = h * Math.min(window.devicePixelRatio, 2) * 0.5
+    },
+    dispose(scene) {
+      if (group) {
+        scene.remove(group)
+        disposeObject(group)
+      }
+      scene.fog = new THREE.FogExp2(0x030308, 0.028)
+      scene.background = new THREE.Color(0x030308)
+      noiseTex?.dispose()
+      noiseTex = null
+      group = null
+      cameraRef = null
+      sky = null
+      wings = null
+      bodies = null
+      wingAttr = null
+      glowAttr = null
+      headGlow = null
+      haloGlow = null
+      dust = null
+      flies.length = 0
+      flowers.length = 0
+    },
+  }
+}
+
 export const STYLE_CATALOG = [
   { id: 'nebula', label: 'Nebula', hint: 'Spiral dust and embers' },
   { id: 'dusk', label: 'Dusk', hint: 'Fixed city orbit' },
@@ -5913,6 +7134,7 @@ export const STYLE_CATALOG = [
   { id: 'abyss', label: 'Abyss', hint: 'Deep-sea jellyfish swarm' },
   { id: 'caldera', label: 'Caldera', hint: 'Erupting volcano at night' },
   { id: 'rain', label: 'Rain Window', hint: 'Neon city through wet glass' },
+  { id: 'butterfly', label: 'Butterfly', hint: 'Moonlit meadow of glowing wings' },
 ] as const
 
 export const STYLE_FACTORIES = [
@@ -5929,6 +7151,7 @@ export const STYLE_FACTORIES = [
   createAbyss,
   createCaldera,
   createRainWindow,
+  createButterfly,
 ]
 
 export function createAllStyles(): VisualStyle[] {
