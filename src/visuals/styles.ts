@@ -6228,6 +6228,7 @@ export function createButterfly(): VisualStyle {
           uMeteorA: { value: meteorA },
           uMeteorB: { value: meteorB },
           uMeteorT: { value: -1 },
+          uMeteorHue: { value: 2 },
         },
         vertexShader: `
           varying vec3 vDir;
@@ -6239,7 +6240,7 @@ export function createButterfly(): VisualStyle {
         fragmentShader: `
           uniform float uTime, uEnergy, uBeat;
           uniform vec3 uMoonDir, uMeteorA, uMeteorB;
-          uniform float uMeteorT;
+          uniform float uMeteorT, uMeteorHue;
           varying vec3 vDir;
           ${glslCommon}
           float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
@@ -6290,7 +6291,14 @@ export function createButterfly(): VisualStyle {
               vec3 hd = d - head;
               float glowHead = exp(-dot(hd, hd) / 0.000025);
               float fade = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.72, 1.0, t));
-              col += mix(vec3(0.85, 0.92, 1.0), neon(uC), 0.3) * (trail * 2.6 + glowHead * 3.2) * fade;
+              // live palette colours: the head's colour fades into a second palette colour toward the
+              // tail, and the whole streak pumps with energy and beats
+              vec3 mA = neon(pickCol(uMeteorHue));
+              vec3 mB = neon(pickCol(uMeteorHue < 1.5 ? 2.0 : 0.0));
+              vec3 trailCol = mix(mB, mA, k);
+              vec3 headCol = mix(mA, vec3(1.0), 0.3);
+              float pump = 1.0 + uEnergy * 0.8 + uBeat * 0.9;
+              col += (trailCol * trail * 2.6 + headCol * glowHead * 3.2) * fade * pump;
             }
             if (el > 0.22) {
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
@@ -7091,6 +7099,7 @@ export function createButterfly(): VisualStyle {
         meteorA.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az))
         meteorB.set(Math.cos(el2) * Math.cos(az2), Math.sin(el2), Math.cos(el2) * Math.sin(az2))
         meteorT = 0
+        ;(sky.material as THREE.ShaderMaterial).uniforms.uMeteorHue.value = PICKS[Math.floor(Math.random() * PICKS.length)]
         meteorDur = 0.9 + Math.random() * 0.7
         meteorTimer = 7 + Math.random() * 9
       }
