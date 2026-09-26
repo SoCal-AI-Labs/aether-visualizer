@@ -5,7 +5,7 @@ import { VisualizerEngine } from './visuals/engine'
 import { STYLE_CATALOG } from './visuals/styles'
 import type { DesktopSource } from '../electron/preload'
 
-const VISUAL_TUNE = 91
+const VISUAL_TUNE = 92
 
 const PRESET_URLS = [
   { label: 'YouTube', url: 'https://www.youtube.com' },

@@ -5908,6 +5908,7 @@ export function createButterfly(): VisualStyle {
   let bodies: THREE.InstancedMesh | null = null
   let wingAttr: THREE.InstancedBufferAttribute | null = null
   let glowAttr: THREE.InstancedBufferAttribute | null = null
+  let styleAttr: THREE.InstancedBufferAttribute | null = null
   let headGlow: THREE.InstancedBufferAttribute | null = null
   let haloGlow: THREE.BufferAttribute | null = null
   let dust: THREE.Points | null = null
@@ -5973,6 +5974,9 @@ export function createButterfly(): VisualStyle {
     sy: number
     sz: number
     seed: number
+    dir: THREE.Vector3
+    mat: THREE.Matrix4
+    style: [number, number, number, number]
   }
   type Flower = { pos: THREE.Vector3; band: number; glow: number; hue: number; taken: boolean }
   const flies: Fly[] = []
@@ -5992,6 +5996,9 @@ export function createButterfly(): VisualStyle {
   const desired = new THREE.Vector3()
   const look = new THREE.Vector3()
   const tint = new THREE.Color()
+  const drawOrder: number[] = []
+  const camDist = new Float32Array(COUNT)
+  const farFirst = (a: number, b: number) => camDist[b] - camDist[a]
 
   const glslCommon = `
     uniform vec3 uA, uB, uC, uFogColor;
@@ -6015,8 +6022,8 @@ export function createButterfly(): VisualStyle {
     }
     vec3 neon(vec3 c) {
       float l = dot(c, vec3(0.299, 0.587, 0.114));
-      vec3 s = max(mix(vec3(l), c, 1.8), vec3(0.0));
-      return s * (0.6 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
+      vec3 s = max(mix(vec3(l), c, 2.3), vec3(0.0));
+      return s * (0.66 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
     }
     vec3 pickCol(float t) { return t < 1.0 ? mix(uA, uB, t) : mix(uB, uC, clamp(t - 1.0, 0.0, 1.0)); }
     float fogAmt(vec3 w) {
@@ -6032,7 +6039,10 @@ export function createButterfly(): VisualStyle {
   const gustZ = (z: number, t: number) => Math.cos(t * 0.7 + z * 0.4) * 0.08
   const smooth = (x: number) => x * x * (3 - 2 * x)
   const pickInto = (t: number, out: THREE.Color) => (t < 1 ? out.copy(uA).lerp(uB, t) : out.copy(uB).lerp(uC, Math.min(1, t - 1)))
-  const vivid = (c: THREE.Color) => c.multiplyScalar(0.6 / Math.max(0.05, c.r * 0.299 + c.g * 0.587 + c.b * 0.114))
+  const vivid = (c: THREE.Color) => {
+    c.offsetHSL(0, 0.3, 0)
+    return c.multiplyScalar(0.72 / Math.max(0.05, c.r * 0.299 + c.g * 0.587 + c.b * 0.114))
+  }
 
   const buildWingGeometry = () => {
     const NA = 8
@@ -6172,7 +6182,7 @@ export function createButterfly(): VisualStyle {
     id: 'butterfly',
     label: 'Butterfly',
     hint: 'Moonlit meadow of glowing wings',
-    bloom: { base: 0.34, pulse: 0.2 },
+    bloom: { base: 0.42, pulse: 0.24 },
     mount(scene, camera, palette) {
       cameraRef = camera
       camera.position.set(0, 1.5, 9.6)
@@ -6220,9 +6230,11 @@ export function createButterfly(): VisualStyle {
             vec3 col = mix(vec3(0.07, 0.036, 0.085), vec3(0.028, 0.02, 0.06), smoothstep(0.0, 0.2, el));
             col = mix(col, vec3(0.006, 0.008, 0.026), smoothstep(0.18, 0.75, el));
             // last light of the sunset, opposite the moon, tinted by the music palette
-            float sunSide = 0.5 + 0.5 * dot(dxz, -normalize(uMoonDir.xz));
+            // clamped: rounding can push this a hair below zero along the moon's azimuth, and pow() of a
+            // negative is NaN, which bloom smears into a full-height black band
+            float sunSide = clamp(0.5 + 0.5 * dot(dxz, -normalize(uMoonDir.xz)), 0.0, 1.0);
             float dusk = exp(-max(el, 0.0) * 6.0) * pow(sunSide, 2.5);
-            col += mix(neon(uA), neon(uC), 0.4) * dusk * (0.1 + uEnergy * 0.06);
+            col += mix(neon(uA), neon(uC), 0.4) * dusk * (0.18 + uEnergy * 0.12);
 
             if (el > 0.02) {
               float sr = uTime * 0.004;
@@ -6245,7 +6257,7 @@ export function createButterfly(): VisualStyle {
             }
             col += vec3(0.05, 0.05, 0.08) * exp(-abs(el) * 22.0) * 0.5;
             if (el > 0.22) {
-              gl_FragColor = vec4(col, 1.0);
+              gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
               return;
             }
 
@@ -6260,7 +6272,7 @@ export function createButterfly(): VisualStyle {
             for (int k = 0; k < 2; k++) {
               float cells = k == 0 ? 120.0 : 230.0;
               float ta = az01 * cells + float(k) * 0.37;
-              float id = floor(ta);
+              float id = mod(floor(ta), cells);
               float th = hash(vec2(id, 1.7 + float(k) * 3.1));
               float center = 0.5 + (hash(vec2(id, 8.3 + float(k))) - 0.5) * 0.5;
               float w = 0.35 + th * 0.4;
@@ -6270,13 +6282,13 @@ export function createButterfly(): VisualStyle {
             }
             float tb = az01 * 310.0;
             float tg = fract(tb) * 2.0 - 1.0;
-            float th2 = hash(vec2(floor(tb), 5.3));
+            float th2 = hash(vec2(mod(floor(tb), 310.0), 5.3));
             line = max(line, ridge + (0.025 + th2 * 0.05) * max(0.0, 1.0 - abs(tg) * 1.1) * step(0.72, th2));
             line += (noise(dxz * 260.0) - 0.5) * 0.004 + (noise(dxz * 700.0) - 0.5) * 0.002;
             float tree = smoothstep(line + 0.0022, line - 0.0022, el);
             vec3 sil = uFogColor + vec3(0.03, 0.035, 0.06) * smoothstep(line - 0.012, line, el) * (1.0 - sunSide) * 0.4;
             col = mix(col, sil, tree);
-            gl_FragColor = vec4(col, 1.0);
+            gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
           }
         `,
       })
@@ -6320,7 +6332,7 @@ export function createButterfly(): VisualStyle {
       // flowers grow in patches; each listens to its own slice of the spectrum
       const patches = Array.from({ length: 7 }, () => {
         const a = rng.next() * Math.PI * 2
-        const r = Math.sqrt(rng.next()) * 5.5
+        const r = Math.sqrt(rng.next()) * 4.8
         return { x: Math.cos(a) * r, z: Math.sin(a) * r, r: rng.range(1.3, 2.6), hue: rng.pick(PICKS) }
       })
       for (let i = 0; i < FLOWERS; i++) {
@@ -6367,8 +6379,8 @@ export function createButterfly(): VisualStyle {
           void main() {
             vec3 tip = mix(vec3(0.02, 0.055, 0.04), vec3(0.04, 0.06, 0.03), vTone);
             vec3 col = mix(vec3(0.003, 0.008, 0.006), tip, vH);
-            col += vec3(0.05, 0.06, 0.1) * pow(vH, 3.0) * 0.35;
-            col += neon(mix(uA, uC, vTone)) * pow(vH, 5.0) * (0.015 + uEnergy * 0.03);
+            col += vec3(0.05, 0.06, 0.1) * pow(clamp(vH, 0.0, 1.0), 3.0) * 0.35;
+            col += neon(mix(uA, uC, vTone)) * pow(clamp(vH, 0.0, 1.0), 5.0) * (0.025 + uEnergy * 0.05);
             col = mix(col, uFogColor, fogAmt(vWorld));
             gl_FragColor = vec4(col, 1.0);
           }
@@ -6436,18 +6448,18 @@ export function createButterfly(): VisualStyle {
           ${glslCommon}
           void main() {
             float r = length(vP);
-            float ang = atan(vP.y, vP.x);
+            float ang = atan(vP.y, vP.x + 0.0001);
             float n = vFlower.y;
             float petal = 0.5 + 0.5 * pow(abs(cos(ang * n * 0.5 + vFlower.z * 6.0)), 0.7);
             float mask = 1.0 - smoothstep(petal - 0.05, petal + 0.01, r);
             if (mask < 0.02) discard;
             vec3 pc = neon(pickCol(vFlower.x));
             float streak = 0.8 + 0.2 * cos(ang * n * 3.0);
-            vec3 col = pc * (0.18 + vGlow * 1.5) * mix(0.55, 1.1, r / petal) * streak;
+            vec3 col = pc * (0.34 + vGlow * 1.9) * mix(0.6, 1.15, r / petal) * streak;
             float heart = 1.0 - smoothstep(0.1, 0.19, r);
-            col = mix(col, vec3(1.0, 0.9, 0.62) * (0.4 + vGlow * 1.6), heart);
+            col = mix(col, mix(vec3(1.0, 0.9, 0.62), pc, 0.35) * (0.5 + vGlow * 1.8), heart);
             col = mix(col, uFogColor, fogAmt(vWorld));
-            gl_FragColor = vec4(col, mask);
+            gl_FragColor = vec4(max(col, vec3(0.0)), mask);
           }
         `,
       })
@@ -6506,9 +6518,9 @@ export function createButterfly(): VisualStyle {
               vec3 p = position;
               p.xz += gust(p.xz, uTime);
               vec4 mv = modelViewMatrix * vec4(p, 1.0);
-              gl_PointSize = (0.45 + aGlow * 0.9) * uScale / max(-mv.z, 0.1);
+              gl_PointSize = min((0.45 + aGlow * 0.9) * uScale / max(-mv.z, 0.1), uScale * 0.35);
               gl_Position = projectionMatrix * mv;
-              vCol = neon(pickCol(aHue)) * (0.06 + aGlow * 0.3) * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
+              vCol = neon(pickCol(aHue)) * (0.1 + aGlow * 0.42) * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
             }
           `,
           fragmentShader: pointFrag('4.0'),
@@ -6544,9 +6556,9 @@ export function createButterfly(): VisualStyle {
               vec3 p = position + vec3(sin(uTime * 0.3 + aPhase * 6.28) * 0.9, sin(uTime * 0.5 + aPhase * 12.0) * 0.35, cos(uTime * 0.27 + aPhase * 9.0) * 0.9);
               vec4 mv = modelViewMatrix * vec4(p, 1.0);
               float blink = pow(max(0.0, sin(uBlink * (0.9 + aPhase * 1.3) + aPhase * 40.0)), 6.0);
-              gl_PointSize = (0.07 + blink * 0.09) * uScale / max(-mv.z, 0.1);
+              gl_PointSize = min((0.07 + blink * 0.09) * uScale / max(-mv.z, 0.1), uScale * 0.12);
               gl_Position = projectionMatrix * mv;
-              vCol = mix(vec3(0.85, 1.0, 0.45), neon(uC), 0.3) * (0.05 + blink * 1.6) * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
+              vCol = mix(vec3(0.85, 1.0, 0.45), neon(uC), 0.45) * (0.05 + blink * 1.8) * (1.0 - fogAmt((modelMatrix * vec4(p, 1.0)).xyz));
             }
           `,
           fragmentShader: pointFrag('5.0'),
@@ -6581,7 +6593,7 @@ export function createButterfly(): VisualStyle {
                 float n = texture2D(uNoise, p * 0.125).r + texture2D(uNoise, p * 0.29 - uTime * 0.0015 + 0.37).r * 0.35;
                 float m = smoothstep(0.5, 0.95, n);
                 float a = m * smoothstep(1.5, 6.0, distance(vWorld, cameraPosition)) * (1.0 - fogAmt(vWorld) * 0.7) * (0.2 - uLayer * 0.08);
-                gl_FragColor = vec4(mix(vec3(0.08, 0.09, 0.13), neon(uB) * 0.12, 0.3), a);
+                gl_FragColor = vec4(mix(vec3(0.08, 0.09, 0.13), neon(uB) * 0.14, 0.45), a);
               }
             `,
           }),
@@ -6634,8 +6646,8 @@ export function createButterfly(): VisualStyle {
           // wings need deeper colour than the shared neon(): tone mapping bleaches bright pastels to white
           vec3 wingHue(vec3 c) {
             float l = dot(c, vec3(0.299, 0.587, 0.114));
-            vec3 s = max(mix(vec3(l), c, 2.6), vec3(0.0));
-            return s * (0.5 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
+            vec3 s = max(mix(vec3(l), c, 3.2), vec3(0.0));
+            return s * (0.6 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
           }
           float ell(vec2 p, vec2 c, vec2 r, float rot) {
             vec2 q = p - c;
@@ -6649,7 +6661,7 @@ export function createButterfly(): VisualStyle {
             vec2 p = vW;
             float dF = ell(p, vec2(0.5, -0.32), vec2(0.6, 0.3), -0.6);
             float dH = ell(p, vec2(0.38, 0.3), vec2(0.44, 0.34), 0.75);
-            dH += 0.05 * sin(atan(p.y - 0.3, p.x - 0.38) * 9.0) * step(0.0, p.y);
+            dH += 0.05 * sin(atan(p.y - 0.3, p.x - 0.38 + 0.0001) * 9.0) * step(0.0, p.y);
             float d = min(dF, dH);
             if (kind > 1.5 && kind < 2.5) d = min(d, ell(p, vec2(0.52, 0.72), vec2(0.24, 0.055), 1.2));
             float edgeA = 1.0 - smoothstep(-0.05, 0.02, d);
@@ -6657,16 +6669,16 @@ export function createButterfly(): VisualStyle {
 
             vec3 c1 = wingHue(pickCol(vStyle.y));
             vec3 c2 = wingHue(pickCol(vStyle.z));
-            float fres = pow(1.0 - abs(dot(normalize(vN), normalize(cameraPosition - vWorld))), 2.0);
+            float fres = pow(clamp(1.0 - abs(dot(normalize(vN), normalize(cameraPosition - vWorld))), 0.0, 1.0), 2.0);
             float rr = length(p);
-            float ang = atan(p.y, p.x);
+            float ang = atan(p.y, p.x + 0.0001);
             float vv = abs(fract(ang * 2.2 + 0.5) - 0.5);
             float vein = (1.0 - smoothstep(0.012, 0.03, rr * vv * 0.5)) * smoothstep(0.05, 0.15, rr);
             float margin = smoothstep(-0.32, -0.12, d);
             float outline = smoothstep(-0.12, -0.04, d);
             vec2 dc = vec2(fract(ang * 5.0) - 0.5, (d + 0.16) * 3.2);
             float dots = 1.0 - smoothstep(0.1, 0.17, length(dc));
-            float lum = 0.25 + vGF.x * 1.05 + vGF.y * 2.0;
+            float lum = 0.42 + vGF.x * 1.35 + vGF.y * 2.2;
             float sheen = 0.5 + 0.5 * sin(rr * 7.0 - uTime * 1.5 + fres * 4.0 + vStyle.w * 6.28);
             vec3 dark = vec3(0.012, 0.01, 0.018) + c2 * fres * 0.06;
             vec3 col;
@@ -6676,7 +6688,7 @@ export function createButterfly(): VisualStyle {
               vec3 core = wingHue(mix(c1, c2, clamp(fres * 1.2 + rr * 0.35, 0.0, 1.0))) * (0.75 + 0.5 * sheen);
               col = mix(core * lum, dark, margin);
               col += vec3(0.9) * dots * margin * (1.0 - outline) * (0.35 + vGF.x * 0.6);
-              col += c2 * outline * (0.4 + lum * 0.7);
+              col += c2 * outline * (0.6 + lum * 0.9);
             } else if (kind < 1.5) {
               // monarch: glowing cells between dark veins, dotted margin
               vec3 core = wingHue(mix(c1, c1 * 0.65 + c2 * 0.35, clamp(rr, 0.0, 1.0))) * lum * (0.85 + 0.3 * sheen);
@@ -6705,7 +6717,7 @@ export function createButterfly(): VisualStyle {
               op = max(op, eye * edgeA);
             }
             col = mix(col, uFogColor, fogAmt(vWorld));
-            gl_FragColor = vec4(col, op);
+            gl_FragColor = vec4(max(col, vec3(0.0)), op);
           }
         `,
       })
@@ -6714,7 +6726,8 @@ export function createButterfly(): VisualStyle {
       wingAttr.setUsage(THREE.DynamicDrawUsage)
       glowAttr = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 2), 2)
       glowAttr.setUsage(THREE.DynamicDrawUsage)
-      const styleAttr = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 4), 4)
+      styleAttr = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 4), 4)
+      styleAttr.setUsage(THREE.DynamicDrawUsage)
       wingGeo.setAttribute('aWing', wingAttr)
       wingGeo.setAttribute('aGF', glowAttr)
       wingGeo.setAttribute('aStyle', styleAttr)
@@ -6731,7 +6744,10 @@ export function createButterfly(): VisualStyle {
         const kind = k < 0.3 ? 0 : k < 0.6 ? 1 : k < 0.85 ? 2 : 3
         const p1 = rng.int(PICKS.length)
         const pick = PICKS[p1]
-        styleAttr.setXYZW(i, kind, pick, PICKS[(p1 + 1 + rng.int(PICKS.length - 1)) % PICKS.length], rng.next())
+        const style: [number, number, number, number] = [kind, pick, PICKS[(p1 + 1 + rng.int(PICKS.length - 1)) % PICKS.length], rng.next()]
+        styleAttr.setXYZW(i, ...style)
+        const heading = rng.next() * Math.PI * 2
+        drawOrder.push(i)
         flies.push({
           pos: new THREE.Vector3(rng.range(-6, 6), rng.range(0.8, 2.6), rng.range(-6, 6)),
           vel: new THREE.Vector3(rng.range(-0.5, 0.5), 0, rng.range(-0.5, 0.5)),
@@ -6742,7 +6758,7 @@ export function createButterfly(): VisualStyle {
           rate: rng.range(2.8, 3.8),
           speed: rng.range(0.9, 1.4),
           scale: i < 4 ? rng.range(0.4, 0.46) : rng.range(0.22, 0.34),
-          heading: rng.next() * Math.PI * 2,
+          heading,
           bank: 0,
           theta: 0.5,
           flex: 0,
@@ -6766,6 +6782,9 @@ export function createButterfly(): VisualStyle {
           sy: rng.next() * Math.PI * 2,
           sz: rng.next() * Math.PI * 2,
           seed: rng.next() * 10,
+          dir: new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading)),
+          mat: new THREE.Matrix4(),
+          style,
         })
       }
       // a dozen start the scene already resting on flowers
@@ -6805,7 +6824,7 @@ export function createButterfly(): VisualStyle {
                 return;
               }
               vec4 mv = modelViewMatrix * vec4(position, 1.0);
-              gl_PointSize = (0.025 + aLife * 0.05) * uScale / max(-mv.z, 0.1);
+              gl_PointSize = min((0.025 + aLife * 0.05) * uScale / max(-mv.z, 0.1), uScale * 0.08);
               gl_Position = projectionMatrix * mv;
               float tw = 0.7 + 0.3 * sin(aLife * 40.0 + position.x * 13.0);
               vCol = aColor * aLife * tw * (1.0 - fogAmt((modelMatrix * vec4(position, 1.0)).xyz));
@@ -6912,7 +6931,7 @@ export function createButterfly(): VisualStyle {
           const gx = fl.pos.x + gustX(fl.pos.x, fl.pos.z, time)
           const gz = fl.pos.z + gustZ(fl.pos.z, time)
           for (let k = 0; k < 10; k++) {
-            spawnDust(gx, fl.pos.y + 0.05, gz, (Math.random() - 0.5) * 0.5, 0.4 + Math.random() * 0.7, (Math.random() - 0.5) * 0.5, tint.r * 0.8, tint.g * 0.8, tint.b * 0.8)
+            spawnDust(gx, fl.pos.y + 0.05, gz, (Math.random() - 0.5) * 0.5, 0.4 + Math.random() * 0.7, (Math.random() - 0.5) * 0.5, tint.r * 1.1, tint.g * 1.1, tint.b * 1.1)
           }
         }
       }
@@ -6925,7 +6944,7 @@ export function createButterfly(): VisualStyle {
           updraft -= 1
           const a = Math.random() * Math.PI * 2
           const r = Math.random() * 1.6
-          spawnDust(Math.cos(a) * r, 0.3, Math.sin(a) * r, (Math.random() - 0.5) * 0.2, 1.2 + Math.random(), (Math.random() - 0.5) * 0.2, tint.r * 0.55, tint.g * 0.55, tint.b * 0.55)
+          spawnDust(Math.cos(a) * r, 0.3, Math.sin(a) * r, (Math.random() - 0.5) * 0.2, 1.2 + Math.random(), (Math.random() - 0.5) * 0.2, tint.r * 0.8, tint.g * 0.8, tint.b * 0.8)
         }
       }
 
@@ -6952,8 +6971,10 @@ export function createButterfly(): VisualStyle {
           f.phase += dt * 1.4
           theta = 1.0 + 0.5 * Math.sin(f.phase)
           f.perchT -= dt
+          f.bank *= 1 - Math.min(1, dt * 5)
           dummy.position.copy(f.pos)
           dummy.rotation.set(-0.08, f.heading, 0)
+          dummy.rotateZ(f.bank)
           if (f.perchT <= 0 || (m.beat && m.bass > 0.55 && Math.random() < 0.18)) takeOff(f)
         } else {
           if (swirling) {
@@ -7029,13 +7050,21 @@ export function createButterfly(): VisualStyle {
           theta = 0.22 * (1 - f.flapAmp) + (0.42 + 0.8 * Math.sin(f.phase)) * f.flapAmp
           flex = -Math.cos(f.phase) * 0.45 * f.flapAmp
 
-          look.copy(f.vel)
+          // the body follows an eased heading: raw velocity zig-zags every frame and made them twitch and spin
+          const vl = f.vel.length()
+          if (vl > 0.05) {
+            look.copy(f.vel).multiplyScalar(1 / vl)
+            f.dir.lerp(look, Math.min(1, dt * 4))
+            if (f.dir.lengthSq() < 0.01) f.dir.copy(look)
+            f.dir.normalize()
+          }
+          look.copy(f.dir)
           const hl = Math.hypot(look.x, look.z)
-          if (hl > 0.05) {
+          if (hl > 0.08) {
             const nh = Math.atan2(look.x, look.z)
             const dh = Math.atan2(Math.sin(nh - f.heading), Math.cos(nh - f.heading))
-            const bankTarget = Math.max(-0.7, Math.min(0.7, (dh / Math.max(dt, 0.001)) * 0.25))
-            f.bank += (bankTarget - f.bank) * Math.min(1, dt * 4)
+            const bankTarget = Math.max(-0.5, Math.min(0.5, (dh / Math.max(dt, 0.001)) * 0.2))
+            f.bank += (bankTarget - f.bank) * Math.min(1, dt * 3)
             f.heading = nh
           } else {
             look.x = Math.sin(f.heading) * 0.05
@@ -7053,7 +7082,7 @@ export function createButterfly(): VisualStyle {
             f.emit = swirling ? 0.035 : 0.075
             pickInto(f.pick, tint)
             vivid(tint)
-            const k = 0.25 + f.glow * 0.45 + f.flash * 0.6
+            const k = 0.4 + f.glow * 0.6 + f.flash * 0.8
             spawnDust(f.pos.x, f.pos.y, f.pos.z, (Math.random() - 0.5) * 0.12, -0.08 - Math.random() * 0.1, (Math.random() - 0.5) * 0.12, tint.r * k, tint.g * k, tint.b * k)
           }
         }
@@ -7062,15 +7091,25 @@ export function createButterfly(): VisualStyle {
         f.flex += (flex - f.flex) * Math.min(1, dt * 30)
         dummy.scale.setScalar(f.scale)
         dummy.updateMatrix()
-        wings.setMatrixAt(i, dummy.matrix)
-        bodies.setMatrixAt(i, dummy.matrix)
-        wingAttr.setXY(i, f.theta, f.flex)
-        glowAttr.setXY(i, f.glow, f.flash)
+        f.mat.copy(dummy.matrix)
+        bodies.setMatrixAt(i, f.mat)
+        camDist[i] = f.pos.distanceToSquared(cam)
+      }
+      // wings are translucent at the edges: draw the swarm far-to-near so overlapping wings blend
+      // instead of cutting dark fringes into each other
+      drawOrder.sort(farFirst)
+      for (let k = 0; k < COUNT; k++) {
+        const f = flies[drawOrder[k]]
+        wings.setMatrixAt(k, f.mat)
+        wingAttr.setXY(k, f.theta, f.flex)
+        glowAttr.setXY(k, f.glow, f.flash)
+        styleAttr?.setXYZW(k, f.style[0], f.style[1], f.style[2], f.style[3])
       }
       wings.instanceMatrix.needsUpdate = true
       bodies.instanceMatrix.needsUpdate = true
       wingAttr.needsUpdate = true
       glowAttr.needsUpdate = true
+      if (styleAttr) styleAttr.needsUpdate = true
 
       const dp = dust.geometry.getAttribute('position') as THREE.BufferAttribute
       const dl = dust.geometry.getAttribute('aLife') as THREE.BufferAttribute
@@ -7111,11 +7150,13 @@ export function createButterfly(): VisualStyle {
       bodies = null
       wingAttr = null
       glowAttr = null
+      styleAttr = null
       headGlow = null
       haloGlow = null
       dust = null
       flies.length = 0
       flowers.length = 0
+      drawOrder.length = 0
     },
   }
 }
