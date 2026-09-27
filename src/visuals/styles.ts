@@ -7698,11 +7698,16 @@ export function createWaterfall(): VisualStyle {
               vec3 glow = fallLight * fl * (0.1 + uEnergy * 0.18);
               // thin neon mineral seams, only in a few sparse regions, pulsing with the bass
               float vn = texture2D(uNoise, vWorld.xy * 0.022 + vec2(vWorld.z * 0.01, 5.0)).r;
-              float region = smoothstep(0.56, 0.7, texture2D(uNoise, vWorld.xy * 0.011 + vec2(3.7, 1.9)).r);
+              float region = smoothstep(0.4, 0.56, texture2D(uNoise, vWorld.xy * 0.011 + vec2(3.7, 1.9)).r);
               float w = fwidth(vn) * 1.2 + 0.003;
               float vein = (1.0 - smoothstep(0.0, w, abs(vn - 0.52))) * region;
+              // a second, finer network of seams in a blended colour
+              float vn2 = texture2D(uNoise, vWorld.xy * 0.045 + vec2(vWorld.z * 0.02, 9.3)).r;
+              float region2 = smoothstep(0.35, 0.55, texture2D(uNoise, vWorld.xy * 0.017 + vec2(8.1, 4.4)).r);
+              float w2 = fwidth(vn2) * 1.2 + 0.003;
+              float vein2 = (1.0 - smoothstep(0.0, w2, abs(vn2 - 0.48))) * region2;
               float pulse = 0.55 + 0.45 * sin(uTime * 1.5 - vWorld.y * 0.4 + vn * 8.0);
-              vec3 veinCol = neon(uC) * vein * (1.0 - horiz) * (0.12 + uBass * 0.7) * pulse;
+              vec3 veinCol = (neon(uC) * vein + mix(neon(uA), neon(uC), 0.5) * vein2 * 0.75) * (1.0 - horiz) * (0.2 + uBass * 0.8) * pulse;
               vec3 col = rock + glow + veinCol;
               col = mix(col, uFogColor, fogAmt(vWorld));
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
@@ -8313,8 +8318,8 @@ export function createWaterfall(): VisualStyle {
             ${common}
             void main() {
               float eq = uSpec[int(clamp(vReed.y, 0.0, 31.0))];
-              vec3 tip = neon(pickCol(vReed.x)) * (0.6 + eq * 1.6 + uBeat * 0.4);
-              vec3 col = mix(vec3(0.004, 0.012, 0.012), tip, smoothstep(0.3, 1.0, vH));
+              vec3 tip = neon(pickCol(vReed.x)) * (1.1 + eq * 1.6 + uBeat * 0.4);
+              vec3 col = mix(neon(pickCol(vReed.x)) * 0.05, tip, smoothstep(0.25, 1.0, vH));
               col = mix(col, uFogColor, fogAmt(vWorld));
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
             }
@@ -8360,7 +8365,7 @@ export function createWaterfall(): VisualStyle {
             float eq = uSpec[int(clamp(aInfo.y, 0.0, 31.0))];
             gl_PointSize = min((0.24 + eq * 0.16) * uScale / max(-mv.z, 0.1), uScale * 0.05);
             gl_Position = projectionMatrix * mv;
-            vCol = neon(pickCol(aInfo.x)) * (0.7 + eq * 1.6 + uBeat * 0.6) * (1.0 - fogAmt(wp.xyz));
+            vCol = neon(pickCol(aInfo.x)) * (1.2 + eq * 1.6 + uBeat * 0.6) * (1.0 - fogAmt(wp.xyz));
           }
         `,
           '3.0',
@@ -8472,7 +8477,7 @@ export function createWaterfall(): VisualStyle {
             void main() {
               float eq = uSpec[int(clamp(vShroom.y, 0.0, 31.0))];
               float breathe = 0.8 + 0.2 * sin(uTime * 1.6 + vShroom.z * 6.2831853);
-              float glow = (0.45 + eq * 1.6 + uBeat * 0.6) * breathe;
+              float glow = (0.95 + eq * 1.6 + uBeat * 0.6) * breathe;
               vec3 c = neon(pickCol(vShroom.x));
               vec3 n = normalize(vN);
               if (!gl_FrontFacing) n = -n;
@@ -8480,7 +8485,7 @@ export function createWaterfall(): VisualStyle {
               vec3 col;
               if (vPart < 0.5) {
                 // pale translucent stem that glows more toward the cap
-                col = mix(vec3(0.03, 0.035, 0.045), c * 0.35 * glow, smoothstep(0.2, 0.95, vY));
+                col = mix(vec3(0.04, 0.05, 0.06) + c * 0.06, c * 0.55 * glow, smoothstep(0.2, 0.95, vY));
               } else if (vPart < 1.5) {
                 col = c * glow * (0.55 + rim * 0.9);
               } else {
@@ -8524,7 +8529,7 @@ export function createWaterfall(): VisualStyle {
             float breathe = 0.8 + 0.2 * sin(uTime * 1.6 + aInfo.z * 6.2831853);
             gl_PointSize = min(aInfo.w * 2.6 * uScale / max(-mv.z, 0.1), uScale * 0.12);
             gl_Position = projectionMatrix * mv;
-            vCol = neon(pickCol(aInfo.x)) * (0.12 + eq * 0.45 + uBeat * 0.2) * breathe * (1.0 - fogAmt(wp.xyz));
+            vCol = neon(pickCol(aInfo.x)) * (0.24 + eq * 0.5 + uBeat * 0.25) * breathe * (1.0 - fogAmt(wp.xyz));
           }
         `,
           '2.5',
@@ -8567,7 +8572,7 @@ export function createWaterfall(): VisualStyle {
             float tw = 0.5 + 0.5 * sin(uTime * (1.2 + aInfo.y * 2.5) + aInfo.y * 40.0);
             gl_PointSize = min(0.17 * uScale / max(-mv.z, 0.1), uScale * 0.03);
             gl_Position = projectionMatrix * mv;
-            vCol = neon(pickCol(aInfo.x)) * (0.25 + tw * 0.5) * (0.7 + uMid * 1.2) * (1.0 - fogAmt(wp.xyz));
+            vCol = neon(pickCol(aInfo.x)) * (0.45 + tw * 0.7) * (0.8 + uMid * 1.2) * (1.0 - fogAmt(wp.xyz));
           }
         `,
           '3.0',
