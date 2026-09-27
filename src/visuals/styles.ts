@@ -7388,9 +7388,9 @@ export function createWaterfall(): VisualStyle {
   const D = 2.6
   const IMPACT = 1.75 * D
   const BEATS = 8
-  const FALL = 150000
+  const FALL = 120000
   const SPLASH = 14000
-  const MIST = 420
+  const MIST = 520
   const SPARKS = 1500
   const LIP = 420
   const f = (n: number) => n.toFixed(3)
@@ -7488,8 +7488,8 @@ export function createWaterfall(): VisualStyle {
     bloom: { base: 0.45, pulse: 0.26 },
     mount(scene, camera, palette) {
       cameraRef = camera
-      camera.position.set(0, 4.5, 31)
-      camera.lookAt(0, 11, 0)
+      camera.position.set(0, 5, 40)
+      camera.lookAt(0, 12, 0)
       scene.fog = null
       scene.background = fogColor.clone()
       group = new THREE.Group()
@@ -7556,7 +7556,7 @@ export function createWaterfall(): VisualStyle {
           const ax = Math.abs(x)
           const notch = 1 - THREE.MathUtils.smoothstep(ax, W / 2 - 0.5, W / 2 + 2)
           const rise = Math.min(1, Math.max(0, (ax - W / 2) / 12))
-          const topY = H + (1 - notch) * (1.5 + rise * 6 + fbm2(x * 0.07, 3.1) * 8)
+          const topY = H + (1 - notch) * (2 + rise * 3 + fbm2(x * 0.07, 3.1) * 4)
           const y = v * topY
           const k = Math.min(1, (x / (W / 2)) ** 2)
           let z = notch * (-2.3 - 1.2 * k) + (1 - notch) * (-2.2 + 0.011 * Math.max(0, ax - W / 2) ** 2)
@@ -7598,21 +7598,27 @@ export function createWaterfall(): VisualStyle {
             varying vec3 vN;
             ${common}
             void main() {
+              vec3 nrm = normalize(vN);
               vec2 q = vWorld.xy * 0.06 + vWorld.z * 0.02;
               float n = texture2D(uNoise, q).r;
               float n2 = texture2D(uNoise, q * 4.0).g;
-              vec3 rock = vec3(0.022, 0.024, 0.034) * (0.6 + n * 0.8) * (0.8 + n2 * 0.4);
+              vec3 rock = vec3(0.016, 0.018, 0.026) * (0.55 + n * 0.8) * (0.8 + n2 * 0.4);
               rock *= 0.85 + 0.15 * sin(vWorld.y * 1.7 + n * 6.0);
-              rock += vec3(0.03, 0.035, 0.05) * max(dot(normalize(vN), normalize(vec3(-0.4, 0.6, 0.7))), 0.0) * 0.6;
-              // wet rock catching the neon glow of the falls
-              float nearFall = exp(-max(abs(vWorld.x) - ${f(W / 2)}, 0.0) * 0.16) * smoothstep(-4.0, ${f(H)}, vWorld.y);
-              vec3 glow = mix(neon(uB), neon(uA), clamp(vWorld.y / ${f(H)}, 0.0, 1.0)) * nearFall * (0.06 + uEnergy * 0.1);
-              // neon mineral veins that pulse with the bass
-              float vn = texture2D(uNoise, vWorld.xy * 0.03 + vec2(vWorld.z * 0.01, 5.0)).r;
-              float w = fwidth(vn) * 1.5 + 0.004;
-              float vein = 1.0 - smoothstep(0.0, w + 0.01 + uBass * 0.006, abs(vn - 0.52));
+              rock += vec3(0.022, 0.026, 0.04) * max(dot(nrm, normalize(vec3(-0.4, 0.6, 0.7))), 0.0) * (0.6 + n2 * 0.8);
+              // the wet recess behind the curtain stays dark so the water reads against it
+              rock *= 1.0 - 0.55 * smoothstep(${f(W / 2 + 1)}, ${f(W / 2 - 1)}, abs(vWorld.x)) * step(vWorld.z, -0.8);
+              // cliff faces lit by the neon glow of the falls
+              vec3 toFall = vec3(clamp(vWorld.x, ${f(-W / 2)}, ${f(W / 2)}), clamp(vWorld.y, 0.0, ${f(H)}), 1.0) - vWorld;
+              float fl = max(dot(nrm, normalize(toFall)), 0.0) * exp(-length(toFall) * 0.09);
+              vec3 fallLight = mix(neon(uB), neon(uA), clamp(vWorld.y / ${f(H)}, 0.0, 1.0));
+              vec3 glow = fallLight * fl * (0.1 + uEnergy * 0.18);
+              // thin neon mineral seams, only in a few sparse regions, pulsing with the bass
+              float vn = texture2D(uNoise, vWorld.xy * 0.022 + vec2(vWorld.z * 0.01, 5.0)).r;
+              float region = smoothstep(0.56, 0.7, texture2D(uNoise, vWorld.xy * 0.011 + vec2(3.7, 1.9)).r);
+              float w = fwidth(vn) * 1.2 + 0.003;
+              float vein = (1.0 - smoothstep(0.0, w, abs(vn - 0.52))) * region;
               float pulse = 0.55 + 0.45 * sin(uTime * 1.5 - vWorld.y * 0.4 + vn * 8.0);
-              vec3 veinCol = neon(uC) * vein * (0.25 + uBass * 1.3) * pulse;
+              vec3 veinCol = neon(uC) * vein * (0.12 + uBass * 0.7) * pulse;
               vec3 col = rock + glow + veinCol;
               col = mix(col, uFogColor, fogAmt(vWorld));
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
@@ -7650,10 +7656,14 @@ export function createWaterfall(): VisualStyle {
               float n2 = texture2D(uNoise, p * 0.13 - vec2(uTime * 0.03, 0.0)).g;
               vec3 col = vec3(0.004, 0.01, 0.022) * (0.6 + n * 0.8);
               float inFall = smoothstep(${f(W / 2 + 1.5)}, ${f(W / 2 - 1.0)}, abs(p.x + (n2 - 0.5) * 1.5));
-              float nearBase = exp(-max(p.y - zi, 0.0) * 0.07);
-              col += mix(neon(uB), neon(uA), 0.3) * inFall * nearBase * (0.07 + uEnergy * 0.12) * (0.5 + n2);
-              float fd = (p.y - zi) * 0.6;
-              col += mix(vec3(0.7, 0.8, 0.95), neon(uC), 0.3) * exp(-fd * fd) * inFall * (0.3 + n * 0.6) * 0.18;
+              float nearBase = exp(-max(p.y - zi, 0.0) * 0.06);
+              // the falls mirrored in the pool as broken vertical streaks
+              float shimmer = texture2D(uNoise, vec2(p.x * 0.35, p.y * 0.04 - uTime * 0.05)).r;
+              col += mix(neon(uB), neon(uA), 0.3) * inFall * nearBase * (0.12 + uEnergy * 0.2) * (0.3 + shimmer * 1.2);
+              // churning foam where the curtain lands
+              float fd = (p.y - zi) * 0.75;
+              float churn = smoothstep(0.45, 0.85, n * 0.7 + texture2D(uNoise, p * 0.3 + vec2(uTime * 0.08, -uTime * 0.05)).r * 0.6);
+              col += mix(vec3(0.75, 0.85, 1.0), neon(uB), 0.35) * exp(-fd * fd) * inFall * churn * 0.14;
               float rings = 0.0;
               for (int i = 0; i < ${BEATS}; i++) {
                 float age = uTime - uBeats[i];
@@ -7677,6 +7687,89 @@ export function createWaterfall(): VisualStyle {
       // the falls: every drop is placed on the GPU from its seed and the clock. Beats ride down the
       // curtain as neon bands (a drop glows if it left the lip at a beat) and the curtain doubles as
       // an equalizer: bass in the middle, treble at the edges.
+      // the water body: a curved sheet on the same parabola as the drops, with flowing streaks keyed
+      // to each strip's emission time so they accelerate down the falls like real water
+      const SU = 120
+      const SA = 48
+      const sheetPos = new Float32Array((SU + 1) * (SA + 1) * 3)
+      const sheetIdx: number[] = []
+      for (let j = 0; j <= SA; j++) {
+        for (let i = 0; i <= SU; i++) sheetPos.set([i / SU, j / SA, 0], (j * (SU + 1) + i) * 3)
+      }
+      for (let j = 0; j < SA; j++) {
+        for (let i = 0; i < SU; i++) {
+          const a = j * (SU + 1) + i
+          sheetIdx.push(a, a + 1, a + SU + 1, a + 1, a + SU + 2, a + SU + 1)
+        }
+      }
+      const sheetGeo = new THREE.BufferGeometry()
+      sheetGeo.setAttribute('position', new THREE.BufferAttribute(sheetPos, 3))
+      sheetGeo.setIndex(sheetIdx)
+      const sheet = new THREE.Mesh(
+        sheetGeo,
+        new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          uniforms: { ...shared, uNoise: { value: noiseTex } },
+          vertexShader: `
+            uniform float uTime;
+            varying vec2 vUA;
+            varying vec3 vWorld;
+            ${common}
+            void main() {
+              float u = position.x;
+              float a = position.y;
+              float t = a * ${f(D)};
+              vec3 p = vec3((u - 0.5) * ${f(W)}, ${f(H)} - ${f(H / (D * D))} * t * t, lipZ(u) + 1.75 * t);
+              p.z += sin(uTime * 0.7 + p.x * 0.35) * 0.3 * a;
+              vec4 w = modelMatrix * vec4(p, 1.0);
+              vUA = vec2(u, a);
+              vWorld = w.xyz;
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform float uTime;
+            uniform float uBeats[${BEATS}];
+            uniform float uBeatAmp[${BEATS}];
+            uniform float uSpec[32];
+            uniform sampler2D uNoise;
+            varying vec2 vUA;
+            varying vec3 vWorld;
+            ${common}
+            void main() {
+              float u = vUA.x;
+              float a = vUA.y;
+              float te = uTime - a * ${f(D)};
+              float s1 = texture2D(uNoise, vec2(u * 2.2, te * 0.22)).r;
+              float s2 = texture2D(uNoise, vec2(u * 7.5 + 0.3, te * 0.6)).g;
+              float streak = smoothstep(0.3, 0.85, s1 * 0.55 + s2 * 0.65);
+              float edge = smoothstep(0.0, 0.05, u) * smoothstep(1.0, 0.95, u);
+              float body = (0.3 + streak * 0.9) * edge;
+              body *= mix(1.0, 0.45 + s2 * 0.7, smoothstep(0.45, 1.0, a));
+              float fade = smoothstep(0.0, 0.02, a) * (1.0 - smoothstep(0.82, 1.0, a));
+              int bin = int(clamp(abs(u - 0.5) * 2.0, 0.0, 0.999) * 32.0);
+              float eq = uSpec[bin];
+              float band = 0.0;
+              for (int i = 0; i < ${BEATS}; i++) {
+                float q = (te - uBeats[i]) * 7.0;
+                band += uBeatAmp[i] * exp(-q * q);
+              }
+              vec3 water = mix(mix(neon(uA), neon(uB), smoothstep(0.0, 1.0, a)), vec3(0.8, 0.9, 1.0), 0.3);
+              vec3 col = water * (0.25 + eq * 0.6 + streak * 0.2) + neon(uC) * band * 0.7;
+              col += vec3(0.9, 0.95, 1.0) * (1.0 - smoothstep(0.0, 0.05, a)) * 0.3;
+              col = mix(col, uFogColor, fogAmt(vWorld));
+              gl_FragColor = vec4(max(col, vec3(0.0)), clamp(body * 0.7, 0.0, 0.85) * fade);
+            }
+          `,
+        }),
+      )
+      // drawn first among the see-through layers so the spray, mist and glow stack on top of it
+      sheet.renderOrder = -1
+      sheet.frustumCulled = false
+      group.add(sheet)
+
       const falls = new THREE.Points(
         seededPoints(FALL, rng),
         additive(
@@ -7721,10 +7814,10 @@ export function createWaterfall(): VisualStyle {
             vec3 c = mix(neon(uA), neon(uB), smoothstep(0.05, 0.95, age));
             c = mix(c, vec3(0.85, 0.95, 1.0), 0.22);
             float shimmer = 0.5 + 0.5 * sin(aSeed.y * 60.0 + uTime * 9.0);
-            c = c * (0.05 + eq * 0.2 + uTreble * shimmer * 0.04) + neon(uC) * band * 0.4;
+            c = c * (0.12 + eq * 0.4 + uTreble * shimmer * 0.08) + neon(uC) * band * 0.55;
             vec4 wp = modelMatrix * vec4(p, 1.0);
             vec4 mv = viewMatrix * wp;
-            gl_PointSize = min((0.05 + age * 0.06 + spray * 0.04) * uScale / max(-mv.z, 0.1), uScale * 0.05);
+            gl_PointSize = min((0.09 + age * 0.08 + spray * 0.05) * uScale / max(-mv.z, 0.1), uScale * 0.05);
             gl_Position = projectionMatrix * mv;
             float fade = smoothstep(0.0, 0.03, age) * (1.0 - smoothstep(0.94, 1.0, age));
             vCol = c * fade * (1.0 - fogAmt(wp.xyz));
@@ -7778,12 +7871,12 @@ export function createWaterfall(): VisualStyle {
           ${common}
           void main() {
             float age = fract(uTime * 0.03 + aSeed.y);
-            vec3 p = vec3((aSeed.x - 0.5) * ${f(W * 2)} + sin(uTime * 0.15 + aSeed.w * 20.0) * 1.5, age * 15.0 + 0.5, ${f(IMPACT)} + (aSeed.z - 0.5) * 10.0);
+            vec3 p = vec3((aSeed.x - 0.5) * ${f(W * 1.8)} + sin(uTime * 0.15 + aSeed.w * 20.0) * 1.5, age * age * 11.0 + 0.3, ${f(IMPACT)} + (aSeed.z - 0.5) * 9.0);
             vec4 wp = modelMatrix * vec4(p, 1.0);
             vec4 mv = viewMatrix * wp;
             gl_PointSize = min((2.5 + aSeed.w * 3.0) * (0.7 + age * 0.8) * uScale / max(-mv.z, 0.1), uScale * 0.35);
             gl_Position = projectionMatrix * mv;
-            vCol = mix(vec3(0.45, 0.5, 0.62), neon(uB), 0.4) * 0.03 * sin(age * 3.14159) * (0.7 + uEnergy * 0.9) * (1.0 - fogAmt(wp.xyz));
+            vCol = mix(vec3(0.5, 0.56, 0.68), neon(uB), 0.4) * 0.05 * sin(age * 3.14159) * (0.8 + uEnergy * 0.9) * (1.0 - fogAmt(wp.xyz));
           }
         `,
           '2.2',
@@ -7810,11 +7903,11 @@ export function createWaterfall(): VisualStyle {
             );
             vec4 wp = modelMatrix * vec4(p, 1.0);
             vec4 mv = viewMatrix * wp;
-            gl_PointSize = min(0.09 * uScale / max(-mv.z, 0.1), uScale * 0.04);
+            gl_PointSize = min(0.13 * uScale / max(-mv.z, 0.1), uScale * 0.04);
             gl_Position = projectionMatrix * mv;
             float tw = 0.5 + 0.5 * sin(uTime * (3.0 + aSeed.w * 4.0) + aSeed.y * 50.0);
             float pk = aSeed.w < 0.33 ? 0.0 : (aSeed.w < 0.66 ? 1.0 : 2.0);
-            vCol = neon(pickCol(pk)) * (0.2 + tw * 0.8) * (0.3 + uBeat * 0.7 + uTreble * 0.5) * sin(age * 3.14159) * (1.0 - fogAmt(wp.xyz));
+            vCol = neon(pickCol(pk)) * (0.2 + tw * 0.8) * (0.65 + uBeat * 0.8 + uTreble * 0.6) * sin(age * 3.14159) * (1.0 - fogAmt(wp.xyz));
           }
         `,
           '4.0',
@@ -7880,12 +7973,12 @@ export function createWaterfall(): VisualStyle {
             ${common}
             void main() {
               float r = length(vec2(vWorld.x, vWorld.y + 1.0));
-              float band = (r - 10.5) / 1.1;
-              float inBow = (1.0 - smoothstep(0.75, 1.0, abs(band))) * smoothstep(0.3, 2.5, vWorld.y);
+              float band = (r - 10.5) / 0.7;
+              float inBow = (1.0 - smoothstep(0.6, 1.0, abs(band))) * smoothstep(0.3, 2.5, vWorld.y) * (1.0 - smoothstep(6.0, 10.5, vWorld.y) * 0.7);
               vec3 c = band < -0.33 ? mix(neon(uA), neon(uB), (band + 1.0) / 0.67)
                 : (band < 0.33 ? mix(neon(uB), neon(uC), (band + 0.33) / 0.66) : mix(neon(uC), neon(uA), (band - 0.33) / 0.67));
               float haze = texture2D(uNoise, vWorld.xy * 0.05 + vec2(uTime * 0.01, 0.0)).r;
-              gl_FragColor = vec4(c, inBow * (0.06 + uMid * 0.16) * (0.4 + haze));
+              gl_FragColor = vec4(c, inBow * (0.025 + uMid * 0.07) * (0.3 + haze * 1.2));
             }
           `,
         }),
@@ -7921,8 +8014,8 @@ export function createWaterfall(): VisualStyle {
       }
 
       const sway = Math.sin(clock * 0.045) * 9
-      cameraRef.position.set(sway, 4.5 + Math.sin(clock * 0.07) * 2.2, 31 + Math.sin(clock * 0.035) * 3)
-      cameraRef.lookAt(sway * 0.2, 11 + Math.sin(clock * 0.05) * 1.2, 0)
+      cameraRef.position.set(sway, 5 + Math.sin(clock * 0.07) * 1.6, 40 + Math.sin(clock * 0.035) * 3)
+      cameraRef.lookAt(sway * 0.2, 12 + Math.sin(clock * 0.05), 0)
       sky.position.copy(cameraRef.position)
     },
     resize(_w, h) {
