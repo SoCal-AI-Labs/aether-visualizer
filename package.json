@@ -1,7 +1,8 @@
 {
   "name": "aether-visualizer",
   "productName": "Aether",
-  "version": "1.0.0",
+  "desktopName": "Aether.desktop",
+  "version": "1.0.1",
   "description": "Aether - cinematic audio visualizer",
   "author": "SoCal AI Labs",
   "private": true,
@@ -11,8 +12,11 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",
-    "dist": "npm run build && electron-builder --win dir",
-    "dist:installer": "npm run build && electron-builder --win nsis"
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
+    "dist:installer": "npm run dist:win"
   },
   "build": {
     "appId": "com.socalailabs.aether",
@@ -29,14 +33,79 @@
     "asar": true,
     "win": {
       "icon": "build/icon.png",
+      "artifactName": "${productName}-Setup-${version}.${ext}",
       "target": [
-        "dir"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Aether"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.music",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "sign": false
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "AudioVideo",
+      "maintainer": "SoCal AI Labs",
+      "synopsis": "Cinematic audio visualizer",
+      "syncDesktopName": true,
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+      "desktop": {
+        "entry": {
+          "Name": "Aether",
+          "Comment": "Aether - cinematic audio visualizer",
+          "StartupWMClass": "Aether"
+        }
+      },
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     }
   },
   "dependencies": {
