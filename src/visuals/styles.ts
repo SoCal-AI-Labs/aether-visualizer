@@ -7388,11 +7388,19 @@ export function createWaterfall(): VisualStyle {
   const D = 2.6
   const IMPACT = 1.75 * D
   const BEATS = 8
-  const FALL = 120000
   const SPLASH = 14000
   const MIST = 520
   const SPARKS = 1500
   const LIP = 420
+  // one gravity for every cascade, so the small feeder falls and the main falls move alike
+  const G = (2 * H) / (D * D)
+  const durOf = (drop: number) => Math.sqrt((2 * drop) / G)
+  // the moon hangs up and to the left behind the falls (30° up, 30° left): high enough to clear the
+  // left cliff wall from the pool, low enough to stay in frame; it rakes the ledges and sheens the water
+  const moonDir = new THREE.Vector3(-0.433, 0.5, -0.75).normalize()
+  // feeder pool levels, stepping up away from the lip
+  const LB = H + 5
+  const LC = H + 9
   const f = (n: number) => n.toFixed(3)
   const beatTimes = new Float32Array(BEATS).fill(-1000)
   const beatAmps = new Float32Array(BEATS)
@@ -7400,12 +7408,14 @@ export function createWaterfall(): VisualStyle {
   let beatIdx = 0
   let clock = 0
   let bassS = 0
+  const dummy = new THREE.Object3D()
   const shared = {
     uA: { value: uA },
     uB: { value: uB },
     uC: { value: uC },
     uFogColor: { value: fogColor },
-    uFog: { value: 0.011 },
+    uFog: { value: 0.009 },
+    uMoonDir: { value: moonDir },
     uTime: { value: 0 },
     uEnergy: { value: 0 },
     uBass: { value: 0 },
@@ -7420,7 +7430,7 @@ export function createWaterfall(): VisualStyle {
   }
 
   const common = `
-    uniform vec3 uA, uB, uC, uFogColor;
+    uniform vec3 uA, uB, uC, uFogColor, uMoonDir;
     uniform float uFog;
     vec3 neon(vec3 c) {
       float l = dot(c, vec3(0.299, 0.587, 0.114));
@@ -7438,6 +7448,22 @@ export function createWaterfall(): VisualStyle {
       return -1.2 * k * k;
     }
   `
+  // gently rippled water catching the moon as a soft sheen; smooth low-frequency normals, because
+  // tight glints on fine ripples alias into per-pixel speckle
+  // (include after declaring uTime and uNoise)
+  const moonWater = `
+    vec3 moonWater(vec2 p, vec3 world, float scale) {
+      vec2 q = p * scale + vec2(uTime * 0.012, uTime * 0.02);
+      float d = 1.0 / 256.0;
+      float h0 = texture2D(uNoise, q).r;
+      float hx = texture2D(uNoise, q + vec2(d, 0.0)).r;
+      float hz = texture2D(uNoise, q + vec2(0.0, d)).r;
+      vec3 nrm = normalize(vec3(-(hx - h0) * 12.0, 1.0, -(hz - h0) * 12.0));
+      vec3 r = reflect(-normalize(cameraPosition - world), nrm);
+      float rm = max(dot(r, uMoonDir), 0.0);
+      return vec3(0.8, 0.86, 1.0) * (pow(rm, 40.0) * 0.35 + pow(rm, 8.0) * 0.06);
+    }
+  `
   const pointFrag = (falloff: string) => `
     varying vec3 vCol;
     void main() {
@@ -7446,12 +7472,12 @@ export function createWaterfall(): VisualStyle {
       gl_FragColor = vec4(vCol, a);
     }
   `
-  const additive = (vertexShader: string, falloff: string) =>
+  const additive = (vertexShader: string, falloff: string, extra: Record<string, THREE.IUniform> = {}) =>
     new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      uniforms: { ...shared },
+      uniforms: { ...shared, ...extra },
       vertexShader,
       fragmentShader: pointFrag(falloff),
     })
@@ -7488,8 +7514,8 @@ export function createWaterfall(): VisualStyle {
     bloom: { base: 0.45, pulse: 0.26 },
     mount(scene, camera, palette) {
       cameraRef = camera
-      camera.position.set(0, 5, 40)
-      camera.lookAt(0, 12, 0)
+      camera.position.set(0, 8.5, 44)
+      camera.lookAt(0, 13, 0)
       scene.fog = null
       scene.background = fogColor.clone()
       group = new THREE.Group()
@@ -7512,7 +7538,7 @@ export function createWaterfall(): VisualStyle {
         new THREE.ShaderMaterial({
           side: THREE.BackSide,
           depthWrite: false,
-          uniforms: { ...shared },
+          uniforms: { ...shared, uNoise: { value: noiseTex } },
           vertexShader: `
             varying vec3 vDir;
             void main() {
@@ -7522,20 +7548,49 @@ export function createWaterfall(): VisualStyle {
           `,
           fragmentShader: `
             uniform float uTime, uEnergy, uBeat;
+            uniform sampler2D uNoise;
             varying vec3 vDir;
             ${common}
             float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
             void main() {
               vec3 d = normalize(vDir);
               float el = d.y;
-              vec3 col = mix(vec3(0.022, 0.02, 0.055), vec3(0.004, 0.006, 0.02), smoothstep(0.0, 0.6, el));
+              float mm = dot(d, uMoonDir);
+              vec3 col = mix(vec3(0.026, 0.026, 0.06), vec3(0.004, 0.006, 0.022), smoothstep(0.0, 0.6, el));
+              col += vec3(0.05, 0.065, 0.11) * exp((mm - 1.0) * 6.0) * 0.6;
               float towardFalls = max(0.0, -d.z);
-              col += mix(neon(uB), neon(uA), 0.5) * exp(-max(el - 0.1, 0.0) * 4.0) * pow(towardFalls, 6.0) * (0.06 + uEnergy * 0.06);
+              col += mix(neon(uB), neon(uA), 0.5) * exp(-max(el - 0.1, 0.0) * 4.0) * pow(towardFalls, 6.0) * (0.05 + uEnergy * 0.05);
+              // milky way: a dusty band of faint light across the sky
+              float mwd = dot(d, normalize(vec3(0.35, 0.45, 0.82)));
+              float dust = texture2D(uNoise, d.xy * 1.3 + d.z * 0.7).r * 0.6 + texture2D(uNoise, d.zx * 3.1 + 0.4).r * 0.4;
+              float band = exp(-mwd * mwd * 14.0) * smoothstep(0.35, 0.8, dust);
+              col += mix(vec3(0.05, 0.05, 0.08), mix(neon(uB), neon(uC), 0.5) * 0.06, 0.3) * band * smoothstep(0.02, 0.3, el) * 0.9;
+              // stars in two layers, washed out in the moon's glare
+              float glare = 1.0 - exp((mm - 1.0) * 25.0) * 0.9;
               float h = hash3(floor(d * 170.0));
-              float star = step(0.9965, h) * (1.0 - smoothstep(0.08, 0.32, length(fract(d * 170.0) - 0.5)));
+              float star = step(0.994, h) * (1.0 - smoothstep(0.06, 0.3, length(fract(d * 170.0) - 0.5)));
+              float h2 = hash3(floor(d * 330.0) + 7.0);
+              float star2 = step(0.992, h2) * (1.0 - smoothstep(0.05, 0.28, length(fract(d * 330.0) - 0.5))) * 0.45;
               float tw = 0.55 + 0.45 * sin(uTime * (1.5 + h * 3.0) + h * 40.0);
               vec3 starCol = mix(vec3(0.85, 0.9, 1.0), neon(mix(uA, uC, fract(h * 7.0))), uBeat * 0.8);
-              col += starCol * star * tw * smoothstep(0.05, 0.3, el) * 1.3;
+              col += starCol * (star * tw * 1.4 + star2 * (1.0 + band * 1.5)) * smoothstep(0.03, 0.25, el) * glare;
+              // the moon: a disc with dark maria and craters inside a soft halo
+              if (mm > 0.998) {
+                float disc = smoothstep(0.99918, 0.99934, mm);
+                vec3 md = d - uMoonDir * mm;
+                float maria = texture2D(uNoise, md.xy * 22.0 + 0.3).r;
+                float crater = texture2D(uNoise, md.xy * 70.0 + 0.7).g;
+                vec3 moonCol = vec3(1.0, 0.97, 0.9) * (0.95 - smoothstep(0.45, 0.7, maria) * 0.3 - crater * 0.12);
+                col = mix(col, moonCol * 1.7, disc);
+              }
+              col += vec3(0.55, 0.62, 0.85) * (exp((mm - 1.0) * 900.0) * 0.5 + exp((mm - 1.0) * 80.0) * 0.12);
+              // distant hazy ridges on the horizon, seen when the camera climbs
+              vec2 dxz = d.xz / max(length(d.xz), 0.0001);
+              float ridge1 = 0.035 + texture2D(uNoise, dxz * 0.35 + 0.2).r * 0.09;
+              float ridge2 = 0.015 + texture2D(uNoise, dxz * 0.6 + 0.7).r * 0.06;
+              vec3 hazeCol = vec3(0.03, 0.035, 0.06) + vec3(0.02, 0.025, 0.04) * exp((mm - 1.0) * 3.0);
+              col = mix(col, hazeCol, smoothstep(ridge1 + 0.003, ridge1 - 0.003, el) * 0.85);
+              col = mix(col, uFogColor * 1.3, smoothstep(ridge2 + 0.003, ridge2 - 0.003, el));
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
             }
           `,
@@ -7545,24 +7600,37 @@ export function createWaterfall(): VisualStyle {
       sky.frustumCulled = false
       group.add(sky)
 
-      // the cliff: a horseshoe notch where the river pours over, flanked by walls that curve forward
+      // the cliff: a horseshoe notch where the river pours over, flanked by walls that curve forward.
+      // Buttress ribs and stepped strata shelves give the face relief for the moonlight to catch.
+      const notchOf = (x: number) => 1 - THREE.MathUtils.smoothstep(Math.abs(x), W / 2 - 0.5, W / 2 + 2)
+      const wallTop = (x: number) => {
+        const rise = Math.min(1, Math.max(0, (Math.abs(x) - W / 2) / 12))
+        return H + (1 - notchOf(x)) * (2 + rise * 3 + fbm2(x * 0.07, 3.1) * 4)
+      }
+      // depth of the face at height y (v = y / wallTop, 0..1)
+      const cliffZ = (x: number, y: number, v: number) => {
+        const notch = notchOf(x)
+        const k = Math.min(1, (x / (W / 2)) ** 2)
+        let z = notch * (-2.3 - 1.2 * k) + (1 - notch) * (-2.2 + 0.011 * Math.max(0, Math.abs(x) - W / 2) ** 2)
+        z += (fbm2(x * 0.16, y * 0.16) - 0.45) * 2.6 * (0.35 + 0.65 * (1 - notch))
+        const ribs = Math.abs(Math.sin(x * 0.42 + fbm2(x * 0.05, 7.3) * 3)) ** 3 * 2.2
+        // strata ledges with wandering spacing, broken into patches rather than running wall-wide
+        const period = 2.6 + fbm2(x * 0.03, 11.1) * 2.6
+        const s = y / period + fbm2(x * 0.05, 1.7) * 1.2 + fbm2(x * 0.18, y * 0.05) * 0.5
+        const patch = THREE.MathUtils.smoothstep(fbm2(x * 0.06 + 20, y * 0.08), 0.4, 0.58)
+        const shelf = THREE.MathUtils.smoothstep(s - Math.floor(s), 0.72, 0.95) * 0.9 * patch
+        z += (ribs + shelf) * (1 - notch) * Math.min(1, y / 3)
+        return z + notch * THREE.MathUtils.smoothstep(v, 0.93, 1) * 1.1
+      }
       const NX = 240
-      const NY = 80
+      const NY = 140
       const verts = new Float32Array((NX + 1) * (NY + 1) * 3)
       for (let j = 0; j <= NY; j++) {
         const v = j / NY
         for (let i = 0; i <= NX; i++) {
           const x = -60 + (120 * i) / NX
-          const ax = Math.abs(x)
-          const notch = 1 - THREE.MathUtils.smoothstep(ax, W / 2 - 0.5, W / 2 + 2)
-          const rise = Math.min(1, Math.max(0, (ax - W / 2) / 12))
-          const topY = H + (1 - notch) * (2 + rise * 3 + fbm2(x * 0.07, 3.1) * 4)
-          const y = v * topY
-          const k = Math.min(1, (x / (W / 2)) ** 2)
-          let z = notch * (-2.3 - 1.2 * k) + (1 - notch) * (-2.2 + 0.011 * Math.max(0, ax - W / 2) ** 2)
-          z += (fbm2(x * 0.16, y * 0.16) - 0.45) * 2.6 * (0.35 + 0.65 * (1 - notch))
-          z += notch * THREE.MathUtils.smoothstep(v, 0.93, 1) * 1.1
-          verts.set([x, y, z], (j * (NX + 1) + i) * 3)
+          const y = v * wallTop(x)
+          verts.set([x, y, cliffZ(x, y, v)], (j * (NX + 1) + i) * 3)
         }
       }
       const idx: number[] = []
@@ -7576,8 +7644,7 @@ export function createWaterfall(): VisualStyle {
       cliffGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
       cliffGeo.setIndex(idx)
       cliffGeo.computeVertexNormals()
-      const cliff = new THREE.Mesh(
-        cliffGeo,
+      const rockMaterial = () =>
         new THREE.ShaderMaterial({
           side: THREE.DoubleSide,
           uniforms: { ...shared, uNoise: { value: noiseTex } },
@@ -7585,9 +7652,15 @@ export function createWaterfall(): VisualStyle {
             varying vec3 vWorld;
             varying vec3 vN;
             void main() {
-              vec4 w = modelMatrix * vec4(position, 1.0);
+              vec4 local = vec4(position, 1.0);
+              vec3 nrm = normal;
+              #ifdef USE_INSTANCING
+                local = instanceMatrix * local;
+                nrm = mat3(instanceMatrix) * nrm;
+              #endif
+              vec4 w = modelMatrix * local;
               vWorld = w.xyz;
-              vN = normalize(mat3(modelMatrix) * normal);
+              vN = normalize(mat3(modelMatrix) * nrm);
               gl_Position = projectionMatrix * viewMatrix * w;
             }
           `,
@@ -7599,14 +7672,21 @@ export function createWaterfall(): VisualStyle {
             ${common}
             void main() {
               vec3 nrm = normalize(vN);
-              vec2 q = vWorld.xy * 0.06 + vWorld.z * 0.02;
+              if (!gl_FrontFacing) nrm = -nrm;
+              // flat ground samples the texture in plan view, walls in elevation
+              float horiz = smoothstep(0.55, 0.8, abs(nrm.y));
+              vec2 q = mix(vWorld.xy * 0.06 + vWorld.z * 0.02, vWorld.xz * 0.06, horiz);
               float n = texture2D(uNoise, q).r;
               float n2 = texture2D(uNoise, q * 4.0).g;
               vec3 rock = vec3(0.016, 0.018, 0.026) * (0.55 + n * 0.8) * (0.8 + n2 * 0.4);
               rock *= 0.85 + 0.15 * sin(vWorld.y * 1.7 + n * 6.0);
-              rock += vec3(0.022, 0.026, 0.04) * max(dot(nrm, normalize(vec3(-0.4, 0.6, 0.7))), 0.0) * (0.6 + n2 * 0.8);
+              // moonlight: a cool key raking the ledges and boulder tops, plus faint sky fill; open ground
+              // on the plateau is damp and mossy, so it takes the light more softly than bare rock
+              vec3 moonKey = mix(vec3(0.055, 0.07, 0.11), vec3(0.022, 0.034, 0.042), horiz * smoothstep(${f(H - 1)}, ${f(H + 1)}, vWorld.y));
+              rock += moonKey * max(dot(nrm, uMoonDir), 0.0) * (0.55 + n2 * 0.9);
+              rock += vec3(0.012, 0.015, 0.026) * (0.5 + 0.5 * nrm.y) * (1.0 - horiz * 0.4);
               // the wet recess behind the curtain stays dark so the water reads against it
-              rock *= 1.0 - 0.55 * smoothstep(${f(W / 2 + 1)}, ${f(W / 2 - 1)}, abs(vWorld.x)) * step(vWorld.z, -0.8);
+              rock *= 1.0 - 0.55 * smoothstep(${f(W / 2 + 1)}, ${f(W / 2 - 1)}, abs(vWorld.x)) * step(vWorld.z, -0.8) * step(vWorld.y, ${f(H - 0.5)});
               // cliff faces lit by the neon glow of the falls
               vec3 toFall = vec3(clamp(vWorld.x, ${f(-W / 2)}, ${f(W / 2)}), clamp(vWorld.y, 0.0, ${f(H)}), 1.0) - vWorld;
               float fl = max(dot(nrm, normalize(toFall)), 0.0) * exp(-length(toFall) * 0.09);
@@ -7618,14 +7698,14 @@ export function createWaterfall(): VisualStyle {
               float w = fwidth(vn) * 1.2 + 0.003;
               float vein = (1.0 - smoothstep(0.0, w, abs(vn - 0.52))) * region;
               float pulse = 0.55 + 0.45 * sin(uTime * 1.5 - vWorld.y * 0.4 + vn * 8.0);
-              vec3 veinCol = neon(uC) * vein * (0.12 + uBass * 0.7) * pulse;
+              vec3 veinCol = neon(uC) * vein * (1.0 - horiz) * (0.12 + uBass * 0.7) * pulse;
               vec3 col = rock + glow + veinCol;
               col = mix(col, uFogColor, fogAmt(vWorld));
               gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
             }
           `,
-        }),
-      )
+        })
+      const cliff = new THREE.Mesh(cliffGeo, rockMaterial())
       cliff.frustumCulled = false
       group.add(cliff)
 
@@ -7649,12 +7729,14 @@ export function createWaterfall(): VisualStyle {
             uniform sampler2D uNoise;
             varying vec3 vWorld;
             ${common}
+            ${moonWater}
             void main() {
               vec2 p = vWorld.xz;
               float zi = ${f(IMPACT)};
               float n = texture2D(uNoise, p * 0.05 + vec2(0.0, uTime * 0.02)).r;
               float n2 = texture2D(uNoise, p * 0.13 - vec2(uTime * 0.03, 0.0)).g;
               vec3 col = vec3(0.004, 0.01, 0.022) * (0.6 + n * 0.8);
+              col += moonWater(p, vWorld, 0.1);
               float inFall = smoothstep(${f(W / 2 + 1.5)}, ${f(W / 2 - 1.0)}, abs(p.x + (n2 - 0.5) * 1.5));
               float nearBase = exp(-max(p.y - zi, 0.0) * 0.06);
               // the falls mirrored in the pool as broken vertical streaks
@@ -7684,11 +7766,65 @@ export function createWaterfall(): VisualStyle {
       pool.frustumCulled = false
       group.add(pool)
 
-      // the falls: every drop is placed on the GPU from its seed and the clock. Beats ride down the
-      // curtain as neon bands (a drop glows if it left the lip at a beat) and the curtain doubles as
-      // an equalizer: bass in the middle, treble at the edges.
-      // the water body: a curved sheet on the same parabola as the drops, with flowing streaks keyed
-      // to each strip's emission time so they accelerate down the falls like real water
+      // every cascade (the main falls, two side ribbons and the feeder falls between the pools) is
+      // built from the same pieces. Drops are placed on the GPU from their seed and the clock; a drop
+      // glows if it left its lip on a beat, so beats ride down each curtain as neon bands. The main
+      // curtain also works as an equalizer: bass in the middle, treble at the edges.
+      type Cascade = {
+        x: number
+        top: number
+        drop: number
+        width: number
+        lipZ: number
+        curve: number
+        v0: number
+        eq: boolean
+        drops: number
+        sheet: boolean
+        glow: number
+      }
+      const cascades: Cascade[] = [
+        { x: 0, top: H, drop: H, width: W, lipZ: 0, curve: 1.2, v0: 1.75, eq: true, drops: 100000, sheet: true, glow: 1 },
+        { x: -(W / 2 + 4.5), top: H - 6, drop: H - 6, width: 1.4, lipZ: 2.6, curve: 0, v0: 0.6, eq: false, drops: 5000, sheet: false, glow: 0.8 },
+        { x: W / 2 + 4.5, top: H - 6, drop: H - 6, width: 1.4, lipZ: 2.6, curve: 0, v0: 0.6, eq: false, drops: 5000, sheet: false, glow: 0.8 },
+        { x: -0.5, top: LB, drop: LB - H, width: 6, lipZ: -13.2, curve: 0.35, v0: 1.2, eq: false, drops: 9000, sheet: true, glow: 0.85 },
+        { x: -2.5, top: LC, drop: LC - LB, width: 3.5, lipZ: -21.2, curve: 0.25, v0: 1.0, eq: false, drops: 5000, sheet: true, glow: 0.85 },
+      ]
+      const cascadeUniforms = (c: Cascade) => ({
+        uC0: { value: new THREE.Vector4(c.x, c.top, c.lipZ, c.width) },
+        uC1: { value: new THREE.Vector4(c.drop, durOf(c.drop), c.v0, c.curve) },
+        uEqOn: { value: c.eq ? 1 : 0 },
+        uGlow: { value: c.glow },
+      })
+      // needs uTime and uEnergy declared first
+      const cascadeGLSL = `
+        uniform vec4 uC0, uC1;
+        uniform float uEqOn, uGlow;
+        uniform float uBeats[${BEATS}];
+        uniform float uBeatAmp[${BEATS}];
+        uniform float uSpec[32];
+        float beatBand(float te) {
+          float band = 0.0;
+          for (int i = 0; i < ${BEATS}; i++) {
+            float q = (te - uBeats[i]) * 7.0;
+            band += uBeatAmp[i] * exp(-q * q);
+          }
+          return band;
+        }
+        float eqAt(float u) {
+          int bin = int(clamp(abs(u - 0.5) * 2.0, 0.0, 0.999) * 32.0);
+          return uEqOn > 0.5 ? uSpec[bin] : uEnergy * 0.6;
+        }
+        // where water that left the lip at u (0..1) is after falling for t seconds
+        vec3 curtain(float u, float t) {
+          float k = (u - 0.5) * 2.0;
+          float g = 2.0 * uC1.x / (uC1.y * uC1.y);
+          return vec3(uC0.x + (u - 0.5) * uC0.w, uC0.y - 0.5 * g * t * t, uC0.z - uC1.w * k * k + uC1.z * t);
+        }
+      `
+
+      // the water body: a curved sheet on the drops' parabola, with flowing streaks keyed to each
+      // strip's emission time so they accelerate down the falls like real water
       const SU = 120
       const SA = 48
       const sheetPos = new Float32Array((SU + 1) * (SA + 1) * 3)
@@ -7705,160 +7841,152 @@ export function createWaterfall(): VisualStyle {
       const sheetGeo = new THREE.BufferGeometry()
       sheetGeo.setAttribute('position', new THREE.BufferAttribute(sheetPos, 3))
       sheetGeo.setIndex(sheetIdx)
-      const sheet = new THREE.Mesh(
-        sheetGeo,
-        new THREE.ShaderMaterial({
-          transparent: true,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-          uniforms: { ...shared, uNoise: { value: noiseTex } },
-          vertexShader: `
-            uniform float uTime;
-            varying vec2 vUA;
-            varying vec3 vWorld;
-            ${common}
-            void main() {
-              float u = position.x;
-              float a = position.y;
-              float t = a * ${f(D)};
-              vec3 p = vec3((u - 0.5) * ${f(W)}, ${f(H)} - ${f(H / (D * D))} * t * t, lipZ(u) + 1.75 * t);
-              p.z += sin(uTime * 0.7 + p.x * 0.35) * 0.3 * a;
-              vec4 w = modelMatrix * vec4(p, 1.0);
-              vUA = vec2(u, a);
-              vWorld = w.xyz;
-              gl_Position = projectionMatrix * viewMatrix * w;
-            }
-          `,
-          fragmentShader: `
-            uniform float uTime;
-            uniform float uBeats[${BEATS}];
-            uniform float uBeatAmp[${BEATS}];
-            uniform float uSpec[32];
-            uniform sampler2D uNoise;
-            varying vec2 vUA;
-            varying vec3 vWorld;
-            ${common}
-            void main() {
-              float u = vUA.x;
-              float a = vUA.y;
-              float te = uTime - a * ${f(D)};
-              float s1 = texture2D(uNoise, vec2(u * 2.2, te * 0.22)).r;
-              float s2 = texture2D(uNoise, vec2(u * 7.5 + 0.3, te * 0.6)).g;
-              float streak = smoothstep(0.3, 0.85, s1 * 0.55 + s2 * 0.65);
-              float edge = smoothstep(0.0, 0.05, u) * smoothstep(1.0, 0.95, u);
-              float body = (0.3 + streak * 0.9) * edge;
-              body *= mix(1.0, 0.45 + s2 * 0.7, smoothstep(0.45, 1.0, a));
-              float fade = smoothstep(0.0, 0.02, a) * (1.0 - smoothstep(0.82, 1.0, a));
-              int bin = int(clamp(abs(u - 0.5) * 2.0, 0.0, 0.999) * 32.0);
-              float eq = uSpec[bin];
-              float band = 0.0;
-              for (int i = 0; i < ${BEATS}; i++) {
-                float q = (te - uBeats[i]) * 7.0;
-                band += uBeatAmp[i] * exp(-q * q);
+      const makeSheet = (c: Cascade) =>
+        new THREE.Mesh(
+          sheetGeo,
+          new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            uniforms: { ...shared, ...cascadeUniforms(c), uNoise: { value: noiseTex } },
+            vertexShader: `
+              uniform float uTime, uEnergy;
+              varying vec2 vUA;
+              varying vec3 vWorld;
+              ${common}
+              ${cascadeGLSL}
+              void main() {
+                float a = position.y;
+                vec3 p = curtain(position.x, a * uC1.y);
+                p.z += sin(uTime * 0.7 + p.x * 0.35) * 0.3 * a * uC1.x / ${f(H)};
+                vec4 w = modelMatrix * vec4(p, 1.0);
+                vUA = position.xy;
+                vWorld = w.xyz;
+                gl_Position = projectionMatrix * viewMatrix * w;
               }
-              vec3 water = mix(mix(neon(uA), neon(uB), smoothstep(0.0, 1.0, a)), vec3(0.8, 0.9, 1.0), 0.3);
-              vec3 col = water * (0.25 + eq * 0.6 + streak * 0.2) + neon(uC) * band * 0.7;
-              col += vec3(0.9, 0.95, 1.0) * (1.0 - smoothstep(0.0, 0.05, a)) * 0.3;
-              col = mix(col, uFogColor, fogAmt(vWorld));
-              gl_FragColor = vec4(max(col, vec3(0.0)), clamp(body * 0.7, 0.0, 0.85) * fade);
+            `,
+            fragmentShader: `
+              uniform float uTime, uEnergy;
+              uniform sampler2D uNoise;
+              varying vec2 vUA;
+              varying vec3 vWorld;
+              ${common}
+              ${cascadeGLSL}
+              void main() {
+                float u = vUA.x;
+                float a = vUA.y;
+                float te = uTime - a * uC1.y;
+                float s1 = texture2D(uNoise, vec2(u * uC0.w * 0.16, te * 0.22)).r;
+                float s2 = texture2D(uNoise, vec2(u * uC0.w * 0.54 + 0.3, te * 0.6)).g;
+                float streak = smoothstep(0.3, 0.85, s1 * 0.55 + s2 * 0.65);
+                float edge = smoothstep(0.0, 0.05, u) * smoothstep(1.0, 0.95, u);
+                float body = (0.3 + streak * 0.9) * edge;
+                body *= mix(1.0, 0.45 + s2 * 0.7, smoothstep(0.45, 1.0, a));
+                float fade = smoothstep(0.0, 0.02, a) * (1.0 - smoothstep(0.82, 1.0, a));
+                vec3 water = mix(mix(neon(uA), neon(uB), smoothstep(0.0, 1.0, a)), vec3(0.8, 0.9, 1.0), 0.3);
+                vec3 col = water * (0.25 + eqAt(u) * 0.6 + streak * 0.2) + neon(uC) * beatBand(te) * 0.7;
+                col += vec3(0.9, 0.95, 1.0) * (1.0 - smoothstep(0.0, 0.05, a)) * 0.3;
+                col = mix(col * uGlow, uFogColor, fogAmt(vWorld));
+                gl_FragColor = vec4(max(col, vec3(0.0)), clamp(body * 0.7, 0.0, 0.85) * fade);
+              }
+            `,
+          }),
+        )
+      const makeDrops = (c: Cascade) =>
+        new THREE.Points(
+          seededPoints(c.drops, rng),
+          additive(
+            `
+            uniform float uTime, uScale, uTreble, uEnergy;
+            attribute vec4 aSeed;
+            varying vec3 vCol;
+            ${common}
+            ${cascadeGLSL}
+            void main() {
+              float u = aSeed.x;
+              float strands = max(3.0, floor(uC0.w * 6.4));
+              u = aSeed.z > 0.35 ? (floor(u * strands) + 0.5 + (aSeed.w - 0.5) * 0.4) / strands : u;
+              float age = fract(uTime / uC1.y + aSeed.y);
+              float t = age * uC1.y;
+              float spray = aSeed.z < 0.08 ? 1.0 : 0.0;
+              float spread = t * t * (0.18 + spray * 0.8) * (0.4 + 0.6 * uC1.x / ${f(H)});
+              vec3 p = curtain(u, t);
+              p.x += (aSeed.w - 0.5) * spread * 1.6 + sin(t * 3.0 + aSeed.y * 40.0) * 0.06 * t;
+              p.z += uC1.z * (aSeed.w - 0.5) * 0.4 * t + (fract(aSeed.y * 7.31) - 0.5) * spread;
+              p.z += sin(uTime * 0.7 + p.x * 0.35) * 0.3 * age * uC1.x / ${f(H)};
+              vec3 c = mix(mix(neon(uA), neon(uB), smoothstep(0.05, 0.95, age)), vec3(0.85, 0.95, 1.0), 0.22);
+              float shimmer = 0.5 + 0.5 * sin(aSeed.y * 60.0 + uTime * 9.0);
+              c = (c * (0.12 + eqAt(u) * 0.4 + uTreble * shimmer * 0.08) + neon(uC) * beatBand(uTime - t) * 0.55) * uGlow;
+              vec4 wp = modelMatrix * vec4(p, 1.0);
+              vec4 mv = viewMatrix * wp;
+              gl_PointSize = min((0.09 + age * 0.08 + spray * 0.05) * uScale / max(-mv.z, 0.1), uScale * 0.05);
+              gl_Position = projectionMatrix * mv;
+              float fade = smoothstep(0.0, 0.03, age) * (1.0 - smoothstep(0.94, 1.0, age));
+              vCol = c * fade * (1.0 - fogAmt(wp.xyz));
             }
           `,
-        }),
-      )
-      // drawn first among the see-through layers so the spray, mist and glow stack on top of it
-      sheet.renderOrder = -1
-      sheet.frustumCulled = false
-      group.add(sheet)
+            '3.5',
+            cascadeUniforms(c),
+          ),
+        )
+      for (const c of cascades) {
+        if (c.sheet) {
+          const s = makeSheet(c)
+          // drawn first among the see-through layers so the spray, mist and glow stack on top of it
+          s.renderOrder = -1
+          s.frustumCulled = false
+          group.add(s)
+        }
+        const d = makeDrops(c)
+        d.frustumCulled = false
+        group.add(d)
+      }
 
-      const falls = new THREE.Points(
-        seededPoints(FALL, rng),
-        additive(
-          `
-          uniform float uTime, uScale, uTreble, uEnergy;
-          uniform float uBeats[${BEATS}];
-          uniform float uBeatAmp[${BEATS}];
-          uniform float uSpec[32];
-          attribute vec4 aSeed;
-          varying vec3 vCol;
-          ${common}
-          void main() {
-            float s = aSeed.z;
-            float side = s < 0.12 ? (s < 0.06 ? -1.0 : 1.0) : 0.0;
-            float u = aSeed.x;
-            float strand = (floor(u * 90.0) + 0.5 + (aSeed.w - 0.5) * 0.4) / 90.0;
-            u = s > 0.4 ? strand : u;
-            float top = side == 0.0 ? ${f(H)} : ${f(H - 6)};
-            float dur = side == 0.0 ? ${f(D)} : ${f(D * Math.sqrt((H - 6) / H))};
-            float g = 2.0 * top / (dur * dur);
-            float age = fract(uTime / dur + aSeed.y);
-            float t = age * dur;
-            float x0 = side == 0.0 ? (u - 0.5) * ${f(W)} : side * (${f(W / 2 + 4.5)} + (u - 0.5) * 1.4);
-            float z0 = side == 0.0 ? lipZ(u) : 0.2;
-            float v0 = side == 0.0 ? 1.4 + aSeed.w * 0.7 : 0.5 + aSeed.w * 0.4;
-            float spray = s > 0.12 && s < 0.2 ? 1.0 : 0.0;
-            float spread = t * t * (0.18 + spray * 0.8);
-            vec3 p = vec3(
-              x0 + (aSeed.w - 0.5) * spread * 1.6 + sin(t * 3.0 + aSeed.y * 40.0) * 0.06 * t,
-              top - 0.5 * g * t * t,
-              z0 + v0 * t + (fract(aSeed.y * 7.31) - 0.5) * spread
-            );
-            p.z += sin(uTime * 0.7 + x0 * 0.35) * 0.3 * age;
-            float te = uTime - t;
-            float band = 0.0;
-            for (int i = 0; i < ${BEATS}; i++) {
-              float q = (te - uBeats[i]) * 7.0;
-              band += uBeatAmp[i] * exp(-q * q);
+      // splash: spray thrown up along each landing line, higher with the bass
+      const makeSplash = (c: Cascade, count: number, level: number, height: number) => {
+        const s = new THREE.Points(
+          seededPoints(count, rng),
+          additive(
+            `
+            uniform float uTime, uScale, uSplash;
+            uniform vec4 uS0, uS1;
+            attribute vec4 aSeed;
+            varying vec3 vCol;
+            ${common}
+            void main() {
+              float age = fract(uTime / 1.3 + aSeed.y);
+              float t = age * 1.3;
+              float u = aSeed.x;
+              float k = (u - 0.5) * 2.0;
+              float ang = aSeed.z * 6.2831853;
+              float sp = (0.5 + aSeed.w * 2.0) * uS1.y;
+              float vy = (1.2 + aSeed.w * aSeed.w * 4.5) * uSplash * uS1.y;
+              vec3 p = vec3(
+                uS0.x + (u - 0.5) * uS0.y * 1.02 + cos(ang) * sp * t,
+                uS0.z + vy * t - 4.5 * t * t,
+                uS0.w - uS1.x * k * k + sin(ang) * sp * t * 1.3
+              );
+              float alive = step(uS0.z, p.y);
+              vec4 wp = modelMatrix * vec4(p, 1.0);
+              vec4 mv = viewMatrix * wp;
+              gl_PointSize = min((0.07 + aSeed.w * 0.06) * uScale / max(-mv.z, 0.1), uScale * 0.05) * alive;
+              gl_Position = projectionMatrix * mv;
+              vCol = mix(vec3(0.8, 0.9, 1.0), neon(uC), 0.45) * 0.12 * (1.0 - age) * alive * (1.0 - fogAmt(wp.xyz));
             }
-            int bin = int(clamp(abs(u - 0.5) * 2.0, 0.0, 0.999) * 32.0);
-            float eq = side == 0.0 ? uSpec[bin] : uEnergy * 0.6;
-            vec3 c = mix(neon(uA), neon(uB), smoothstep(0.05, 0.95, age));
-            c = mix(c, vec3(0.85, 0.95, 1.0), 0.22);
-            float shimmer = 0.5 + 0.5 * sin(aSeed.y * 60.0 + uTime * 9.0);
-            c = c * (0.12 + eq * 0.4 + uTreble * shimmer * 0.08) + neon(uC) * band * 0.55;
-            vec4 wp = modelMatrix * vec4(p, 1.0);
-            vec4 mv = viewMatrix * wp;
-            gl_PointSize = min((0.09 + age * 0.08 + spray * 0.05) * uScale / max(-mv.z, 0.1), uScale * 0.05);
-            gl_Position = projectionMatrix * mv;
-            float fade = smoothstep(0.0, 0.03, age) * (1.0 - smoothstep(0.94, 1.0, age));
-            vCol = c * fade * (1.0 - fogAmt(wp.xyz));
-          }
-        `,
-          '3.5',
-        ),
-      )
-      falls.frustumCulled = false
-      group.add(falls)
-
-      // splash: spray thrown up along the impact line, higher with the bass
-      const splash = new THREE.Points(
-        seededPoints(SPLASH, rng),
-        additive(
-          `
-          uniform float uTime, uScale, uSplash;
-          attribute vec4 aSeed;
-          varying vec3 vCol;
-          ${common}
-          void main() {
-            float age = fract(uTime / 1.3 + aSeed.y);
-            float t = age * 1.3;
-            float u = aSeed.x;
-            float ang = aSeed.z * 6.2831853;
-            float sp = 0.5 + aSeed.w * 2.0;
-            float vy = (1.2 + aSeed.w * aSeed.w * 4.5) * uSplash;
-            vec3 p = vec3((u - 0.5) * ${f(W * 1.02)} + cos(ang) * sp * t, vy * t - 4.5 * t * t, lipZ(u) + ${f(IMPACT)} + sin(ang) * sp * t * 1.3);
-            float alive = step(0.0, p.y);
-            vec4 wp = modelMatrix * vec4(p, 1.0);
-            vec4 mv = viewMatrix * wp;
-            gl_PointSize = min((0.07 + aSeed.w * 0.06) * uScale / max(-mv.z, 0.1), uScale * 0.05) * alive;
-            gl_Position = projectionMatrix * mv;
-            vCol = mix(vec3(0.8, 0.9, 1.0), neon(uC), 0.45) * 0.12 * (1.0 - age) * alive * (1.0 - fogAmt(wp.xyz));
-          }
-        `,
-          '3.5',
-        ),
-      )
-      splash.frustumCulled = false
-      group.add(splash)
+          `,
+            '3.5',
+            {
+              uS0: { value: new THREE.Vector4(c.x, c.width, level, c.lipZ + c.v0 * durOf(c.drop)) },
+              uS1: { value: new THREE.Vector4(c.curve, height, 0, 0) },
+            },
+          ),
+        )
+        s.frustumCulled = false
+        group?.add(s)
+      }
+      makeSplash(cascades[0], SPLASH, 0, 1)
+      makeSplash(cascades[3], 2500, H, 0.45)
+      makeSplash(cascades[4], 1500, LB, 0.4)
 
       // billowing mist rising from the plunge pool
       const mist = new THREE.Points(
@@ -7916,16 +8044,22 @@ export function createWaterfall(): VisualStyle {
       sparks.frustumCulled = false
       group.add(sparks)
 
-      // glowing neon rim along the lip, pulsing with the bass
+      // glowing neon rims along the main lip and the feeder lips, pulsing with the bass
+      const lipCascades = [cascades[0], cascades[3], cascades[4]]
+      const lipCounts = lipCascades.map((c) => Math.round((LIP * c.width) / W))
+      const lipTotal = lipCounts.reduce((a, b) => a + b, 0)
       const lipGeo = new THREE.BufferGeometry()
-      const lipPos = new Float32Array(LIP * 3)
-      const lipU = new Float32Array(LIP)
-      for (let i = 0; i < LIP; i++) {
-        const u = i / (LIP - 1)
-        const k = (u - 0.5) * 2
-        lipPos.set([(u - 0.5) * W, H + 0.08, -1.2 * k * k + 0.05], i * 3)
-        lipU[i] = u
-      }
+      const lipPos = new Float32Array(lipTotal * 3)
+      const lipU = new Float32Array(lipTotal)
+      let li = 0
+      lipCascades.forEach((c, ci) => {
+        for (let i = 0; i < lipCounts[ci]; i++, li++) {
+          const u = i / (lipCounts[ci] - 1)
+          const k = (u - 0.5) * 2
+          lipPos.set([c.x + (u - 0.5) * c.width, c.top + 0.08, c.lipZ - c.curve * k * k + 0.05], li * 3)
+          lipU[li] = u
+        }
+      })
       lipGeo.setAttribute('position', new THREE.BufferAttribute(lipPos, 3))
       lipGeo.setAttribute('aU', new THREE.BufferAttribute(lipU, 1))
       const lip = new THREE.Points(
@@ -7949,6 +8083,164 @@ export function createWaterfall(): VisualStyle {
       )
       lip.frustumCulled = false
       group.add(lip)
+
+      // the plateau above the lip: terraces stepping back and up, with three feeder pools carved in
+      // (the top one fed by a river) that spill from one to the next and finally over the main lip
+      type Basin = { x0: number; x1: number; z0: number; z1: number; level: number }
+      const basins: Basin[] = [
+        { x0: -W / 2 - 0.3, x1: W / 2 + 0.3, z0: -12.6, z1: 1.5, level: H },
+        { x0: -5.5, x1: 4.5, z0: -20.6, z1: -13.2, level: LB },
+        { x0: -7, x1: 1.5, z0: -30, z1: -21.2, level: LC },
+        { x0: -4.3, x1: -0.7, z0: -60, z1: -29, level: LC + 0.1 },
+      ]
+      const boxSD = (x: number, z: number, b: Basin, r: number) => {
+        const dx = Math.abs(x - (b.x0 + b.x1) / 2) - ((b.x1 - b.x0) / 2 - r)
+        const dz = Math.abs(z - (b.z0 + b.z1) / 2) - ((b.z1 - b.z0) / 2 - r)
+        return Math.hypot(Math.max(dx, 0), Math.max(dz, 0)) + Math.min(Math.max(dx, dz), 0) - r
+      }
+      const sstep = THREE.MathUtils.smoothstep
+      // starts exactly on the cliff's top edge so the two meshes join without a seam
+      const plateauHeight = (x: number, z: number) => {
+        const top = wallTop(x)
+        const zf = cliffZ(x, top, 1)
+        if (z >= zf) return top
+        const ax = Math.abs(x)
+        let terrace = H + 0.8 + 5 * sstep(-z, 12.8, 13.6) + 4 * sstep(-z, 20.8, 21.6) + 2.5 * sstep(-z, 34, 46)
+        terrace += Math.max(0, ax - 8.5) * 0.35 + fbm2(x * 0.09, z * 0.09) * 3.5 * Math.min(1, Math.max(0, (ax - 6) / 5))
+        terrace += (fbm2(x * 0.35 + 3, z * 0.35) - 0.45) * 0.7
+        let h = THREE.MathUtils.lerp(top, terrace, sstep(zf - z, 0, 4.5))
+        for (const b of basins) {
+          const sd = boxSD(x, z, b, 1.2)
+          if (sd < 1.2) h = THREE.MathUtils.lerp(b.level - 0.6, h, sstep(sd, -0.3, 1.2))
+        }
+        return h
+      }
+      const NXT = 180
+      const NZT = 110
+      const tPos = new Float32Array((NXT + 1) * (NZT + 1) * 3)
+      for (let j = 0; j <= NZT; j++) {
+        const t = (j / NZT) ** 1.35
+        for (let i = 0; i <= NXT; i++) {
+          const x = -45 + (90 * i) / NXT
+          const zf = cliffZ(x, wallTop(x), 1)
+          const z = zf + (-60 - zf) * t
+          tPos.set([x, j === 0 ? wallTop(x) : plateauHeight(x, z), z], (j * (NXT + 1) + i) * 3)
+        }
+      }
+      const tIdx: number[] = []
+      for (let j = 0; j < NZT; j++) {
+        for (let i = 0; i < NXT; i++) {
+          const a = j * (NXT + 1) + i
+          tIdx.push(a, a + 1, a + NXT + 1, a + 1, a + NXT + 2, a + NXT + 1)
+        }
+      }
+      const plateauGeo = new THREE.BufferGeometry()
+      plateauGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3))
+      plateauGeo.setIndex(tIdx)
+      plateauGeo.computeVertexNormals()
+      const plateau = new THREE.Mesh(plateauGeo, rockMaterial())
+      plateau.frustumCulled = false
+      group.add(plateau)
+
+      // pool water: moonlit ripples, neon glow and churn where the feeder cascade lands, beat rings
+      const makePool = (b: Basin, impact: [number, number], clipLip: boolean, streak: number) => {
+        const water = new THREE.Mesh(
+          new THREE.PlaneGeometry(b.x1 - b.x0 + 1.6, b.z1 - b.z0 + 1.6),
+          new THREE.ShaderMaterial({
+            uniforms: {
+              ...shared,
+              uNoise: { value: noiseTex },
+              uImpact: { value: new THREE.Vector2(impact[0], impact[1]) },
+              uClipLip: { value: clipLip ? 1 : 0 },
+              uStreak: { value: streak },
+            },
+            vertexShader: `
+              varying vec3 vWorld;
+              void main() {
+                vec4 w = modelMatrix * vec4(position, 1.0);
+                vWorld = w.xyz;
+                gl_Position = projectionMatrix * viewMatrix * w;
+              }
+            `,
+            fragmentShader: `
+              uniform float uTime, uEnergy, uClipLip, uStreak;
+              uniform float uBeats[${BEATS}];
+              uniform float uBeatAmp[${BEATS}];
+              uniform sampler2D uNoise;
+              uniform vec2 uImpact;
+              varying vec3 vWorld;
+              ${common}
+              ${moonWater}
+              void main() {
+                vec2 p = vWorld.xz;
+                // the lip basin ends exactly where the water pours over the edge
+                if (uClipLip > 0.5 && p.y > lipZ(p.x / ${f(W)} + 0.5) + 0.05) discard;
+                float n = texture2D(uNoise, p * 0.12 - vec2(0.0, uTime * 0.05)).r;
+                float flow = texture2D(uNoise, vec2(p.x * 0.35, p.y * 0.06 - uTime * 0.12)).r;
+                vec3 col = vec3(0.004, 0.01, 0.024) * (0.6 + n * 0.8);
+                col += moonWater(p, vWorld, 0.16);
+                float di = length(p - uImpact);
+                vec3 glowCol = mix(neon(uB), neon(uA), 0.4);
+                col += glowCol * exp(-di * 0.35) * (0.08 + uEnergy * 0.12);
+                col += mix(vec3(0.75, 0.85, 1.0), glowCol, 0.4) * exp(-di * 0.9) * smoothstep(0.4, 0.8, n) * 0.2;
+                col += glowCol * smoothstep(0.55, 0.9, flow) * 0.05 * uStreak;
+                float rings = 0.0;
+                for (int i = 0; i < ${BEATS}; i++) {
+                  float age = uTime - uBeats[i];
+                  if (age > 0.0 && age < 4.0) {
+                    float dd = di - age * 3.0;
+                    rings += uBeatAmp[i] * exp(-dd * dd * 3.0) * (1.0 - age / 4.0);
+                  }
+                }
+                col += neon(uC) * rings * 0.25;
+                col = mix(col, uFogColor, fogAmt(vWorld));
+                gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+              }
+            `,
+          }),
+        )
+        water.rotation.x = -Math.PI / 2
+        water.position.set((b.x0 + b.x1) / 2, b.level + 0.02, (b.z0 + b.z1) / 2)
+        water.frustumCulled = false
+        group?.add(water)
+      }
+      const landing = (c: Cascade): [number, number] => [c.x, c.lipZ + c.v0 * durOf(c.drop)]
+      makePool(basins[0], landing(cascades[3]), true, 0.4)
+      makePool(basins[1], landing(cascades[4]), false, 0.4)
+      makePool(basins[2], [-2.5, -29.5], false, 0.4)
+      makePool(basins[3], [0, -400], false, 1.2)
+
+      // boulders on the banks, in the plunge pool, along the cliff foot and on the pool rims
+      const boulderGeo = new THREE.IcosahedronGeometry(1, 3)
+      const bp = boulderGeo.getAttribute('position') as THREE.BufferAttribute
+      const bv = new THREE.Vector3()
+      for (let i = 0; i < bp.count; i++) {
+        bv.fromBufferAttribute(bp, i)
+        bv.multiplyScalar(0.8 + fbm2(bv.x * 1.4 + 4.1, bv.y * 1.4 + bv.z * 1.1) * 0.55)
+        if (bv.y < -0.25) bv.y = -0.25 + (bv.y + 0.25) * 0.35
+        bp.setXYZ(i, bv.x, bv.y, bv.z)
+      }
+      boulderGeo.computeVertexNormals()
+      const poolRocks = [
+        [-17, 21, 4.2, 2.6, 3.4], [-23.5, 15, 5.5, 3.6, 4.5], [-12, 28, 2.4, 1.5, 2.1], [-28, 26, 6, 4, 5],
+        [15.5, 23, 3.8, 2.3, 3.2], [22, 16.5, 5.2, 3.2, 4.2], [10.5, 30, 1.9, 1.2, 1.7], [27, 27, 6.5, 4.2, 5],
+        [-9.8, 7, 2.1, 1.4, 1.9], [9.2, 8, 2.5, 1.7, 2.1], [-4.5, 11.5, 1.1, 0.7, 1], [5.5, 12.5, 0.9, 0.55, 0.85],
+        [-13, 3, 3.6, 2.8, 3], [-18, 5, 4.2, 3.4, 3.6], [13.5, 3.5, 3.4, 2.6, 3.2], [18.5, 6, 4.5, 3.6, 3.8],
+      ]
+      const rimRocks = [
+        [-8.8, -8, 1.6, 1.1, 1.4], [8.9, -9.5, 1.8, 1.2, 1.5], [-6.8, -16.5, 1.3, 0.9, 1.2],
+        [5.6, -17.5, 1.5, 1, 1.3], [-8.6, -25, 1.4, 1, 1.3], [2.9, -27, 1.2, 0.8, 1.1],
+      ]
+      const boulders = new THREE.InstancedMesh(boulderGeo, rockMaterial(), poolRocks.length + rimRocks.length)
+      ;[...poolRocks.map((r) => [...r, 0]), ...rimRocks.map((r) => [...r, plateauHeight(r[0], r[1])])].forEach(([x, z, sx, sy, sz, base], i) => {
+        dummy.position.set(x, base - sy * 0.3, z)
+        dummy.rotation.set(rng.range(-0.15, 0.15), rng.next() * Math.PI * 2, rng.range(-0.15, 0.15))
+        dummy.scale.set(sx, sy, sz)
+        dummy.updateMatrix()
+        boulders.setMatrixAt(i, dummy.matrix)
+      })
+      boulders.frustumCulled = false
+      group.add(boulders)
 
       // a palette-coloured moonbow hanging in the mist
       const bow = new THREE.Mesh(
@@ -8013,9 +8305,18 @@ export function createWaterfall(): VisualStyle {
         spec[i] += (target - spec[i]) * Math.min(1, dt * 8)
       }
 
+      // mostly a low view from the pool (the feeder cascades peek over the lip); every couple of
+      // minutes the camera cranes up to look down across the terraced pools, then settles back
       const sway = Math.sin(clock * 0.045) * 9
-      cameraRef.position.set(sway, 5 + Math.sin(clock * 0.07) * 1.6, 40 + Math.sin(clock * 0.035) * 3)
-      cameraRef.lookAt(sway * 0.2, 12 + Math.sin(clock * 0.05), 0)
+      const lift = Math.min(1, Math.max(0, (0.5 + 0.5 * Math.sin(clock * 0.028 - 1.3) - 0.4) / 0.45))
+      const crane = lift * lift * (3 - 2 * lift)
+      const lerp = THREE.MathUtils.lerp
+      cameraRef.position.set(
+        lerp(sway, sway * 0.4, crane),
+        lerp(8.5 + Math.sin(clock * 0.07) * 1.5, 44, crane),
+        lerp(44 + Math.sin(clock * 0.035) * 3, 50, crane),
+      )
+      cameraRef.lookAt(lerp(sway * 0.2, sway * 0.1, crane), lerp(13 + Math.sin(clock * 0.05), 26, crane), lerp(0, -14, crane))
       sky.position.copy(cameraRef.position)
     },
     resize(_w, h) {
