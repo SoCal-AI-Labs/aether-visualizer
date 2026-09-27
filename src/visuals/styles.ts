@@ -7401,6 +7401,9 @@ export function createWaterfall(): VisualStyle {
   // feeder pool levels, stepping up away from the lip
   const LB = H + 5
   const LC = H + 9
+  // the big lake on top of the plateau: a lumpy ellipse whose outlet spills into the top pool
+  const LD = H + 12.5
+  const LAKE = { x: -2, z: -47.5, rx: 18, rz: 11 }
   const f = (n: number) => n.toFixed(3)
   const beatTimes = new Float32Array(BEATS).fill(-1000)
   const beatAmps = new Float32Array(BEATS)
@@ -7409,6 +7412,8 @@ export function createWaterfall(): VisualStyle {
   let clock = 0
   let bassS = 0
   const dummy = new THREE.Object3D()
+  // cliff and plateau vertices don't depend on the palette, so they are built once and reused
+  let terrainCache: { cliff: Float32Array; plateau: Float32Array } | null = null
   const shared = {
     uA: { value: uA },
     uB: { value: uB },
@@ -7624,13 +7629,15 @@ export function createWaterfall(): VisualStyle {
       }
       const NX = 240
       const NY = 140
-      const verts = new Float32Array((NX + 1) * (NY + 1) * 3)
-      for (let j = 0; j <= NY; j++) {
-        const v = j / NY
+      const verts = terrainCache?.cliff ?? new Float32Array((NX + 1) * (NY + 1) * 3)
+      if (!terrainCache) {
         for (let i = 0; i <= NX; i++) {
           const x = -60 + (120 * i) / NX
-          const y = v * wallTop(x)
-          verts.set([x, y, cliffZ(x, y, v)], (j * (NX + 1) + i) * 3)
+          const top = wallTop(x)
+          for (let j = 0; j <= NY; j++) {
+            const v = j / NY
+            verts.set([x, v * top, cliffZ(x, v * top, v)], (j * (NX + 1) + i) * 3)
+          }
         }
       }
       const idx: number[] = []
@@ -7789,6 +7796,7 @@ export function createWaterfall(): VisualStyle {
         { x: W / 2 + 4.5, top: H - 6, drop: H - 6, width: 1.4, lipZ: 2.6, curve: 0, v0: 0.6, eq: false, drops: 5000, sheet: false, glow: 0.8 },
         { x: -0.5, top: LB, drop: LB - H, width: 6, lipZ: -13.2, curve: 0.35, v0: 1.2, eq: false, drops: 9000, sheet: true, glow: 0.85 },
         { x: -2.5, top: LC, drop: LC - LB, width: 3.5, lipZ: -21.2, curve: 0.25, v0: 1.0, eq: false, drops: 5000, sheet: true, glow: 0.85 },
+        { x: -2.5, top: LD, drop: LD - LC, width: 3.2, lipZ: -31.4, curve: 0.2, v0: 0.9, eq: false, drops: 4000, sheet: true, glow: 0.85 },
       ]
       const cascadeUniforms = (c: Cascade) => ({
         uC0: { value: new THREE.Vector4(c.x, c.top, c.lipZ, c.width) },
@@ -7987,6 +7995,7 @@ export function createWaterfall(): VisualStyle {
       makeSplash(cascades[0], SPLASH, 0, 1)
       makeSplash(cascades[3], 2500, H, 0.45)
       makeSplash(cascades[4], 1500, LB, 0.4)
+      makeSplash(cascades[5], 1200, LC, 0.38)
 
       // billowing mist rising from the plunge pool
       const mist = new THREE.Points(
@@ -8045,7 +8054,7 @@ export function createWaterfall(): VisualStyle {
       group.add(sparks)
 
       // glowing neon rims along the main lip and the feeder lips, pulsing with the bass
-      const lipCascades = [cascades[0], cascades[3], cascades[4]]
+      const lipCascades = [cascades[0], cascades[3], cascades[4], cascades[5]]
       const lipCounts = lipCascades.map((c) => Math.round((LIP * c.width) / W))
       const lipTotal = lipCounts.reduce((a, b) => a + b, 0)
       const lipGeo = new THREE.BufferGeometry()
@@ -8084,14 +8093,15 @@ export function createWaterfall(): VisualStyle {
       lip.frustumCulled = false
       group.add(lip)
 
-      // the plateau above the lip: terraces stepping back and up, with three feeder pools carved in
-      // (the top one fed by a river) that spill from one to the next and finally over the main lip
+      // the plateau above the lip: terraces stepping back and up to a big lake fed by streams off the
+      // hills; the lake spills into the top pool, and each pool spills into the next and over the lip
       type Basin = { x0: number; x1: number; z0: number; z1: number; level: number }
       const basins: Basin[] = [
         { x0: -W / 2 - 0.3, x1: W / 2 + 0.3, z0: -12.6, z1: 1.5, level: H },
         { x0: -5.5, x1: 4.5, z0: -20.6, z1: -13.2, level: LB },
-        { x0: -7, x1: 1.5, z0: -30, z1: -21.2, level: LC },
-        { x0: -4.3, x1: -0.7, z0: -60, z1: -29, level: LC + 0.1 },
+        { x0: -7, x1: 1.5, z0: -31, z1: -21.2, level: LC },
+        // the lake's outlet channel, running out to the lip of the top feeder cascade
+        { x0: -4.2, x1: -0.8, z0: -40, z1: -31.4, level: LD },
       ]
       const boxSD = (x: number, z: number, b: Basin, r: number) => {
         const dx = Math.abs(x - (b.x0 + b.x1) / 2) - ((b.x1 - b.x0) / 2 - r)
@@ -8099,33 +8109,100 @@ export function createWaterfall(): VisualStyle {
         return Math.hypot(Math.max(dx, 0), Math.max(dz, 0)) + Math.min(Math.max(dx, dz), 0) - r
       }
       const sstep = THREE.MathUtils.smoothstep
-      // starts exactly on the cliff's top edge so the two meshes join without a seam
-      const plateauHeight = (x: number, z: number) => {
-        const top = wallTop(x)
-        const zf = cliffZ(x, top, 1)
+      const lakeWob = (a: number) => 1 + (fbm2(Math.cos(a) * 1.6 + 5, Math.sin(a) * 1.6 + 2) - 0.44) * 0.5
+      const lakeSD = (x: number, z: number) => {
+        const dx = (x - LAKE.x) / LAKE.rx
+        const dz = (z - LAKE.z) / LAKE.rz
+        return (Math.hypot(dx, dz) - lakeWob(Math.atan2(dz, dx))) * Math.min(LAKE.rx, LAKE.rz)
+      }
+      // ground without the streams; starts exactly on the cliff's top edge so the meshes join cleanly
+      const plateauBase = (x: number, z: number, top = wallTop(x), zf = cliffZ(x, top, 1)) => {
         if (z >= zf) return top
         const ax = Math.abs(x)
-        let terrace = H + 0.8 + 5 * sstep(-z, 12.8, 13.6) + 4 * sstep(-z, 20.8, 21.6) + 2.5 * sstep(-z, 34, 46)
-        terrace += Math.max(0, ax - 8.5) * 0.35 + fbm2(x * 0.09, z * 0.09) * 3.5 * Math.min(1, Math.max(0, (ax - 6) / 5))
+        const back = sstep(-z, 34, 44)
+        // low banks around the lake (0.9 above the water) so the whole surface shows from the crane
+        let terrace = H + 0.8 + 5 * sstep(-z, 12.8, 13.6) + 4 * sstep(-z, 20.8, 21.6) + (LD + 0.9 - LC - 0.8) * sstep(-z, 31.0, 31.8)
+        terrace += Math.max(0, ax - 8.5) * 0.35 * (1 - back * 0.7)
+        terrace += fbm2(x * 0.09, z * 0.09) * 3.5 * Math.min(1, Math.max(0, (ax - 6) / 5)) * (1 - back * 0.6)
+        // hills behind the lake, where the streams rise
+        terrace += sstep(-z, 58, 100) * 7 + fbm2(x * 0.05 + 7, z * 0.05) * 5 * sstep(-z, 50, 70)
         terrace += (fbm2(x * 0.35 + 3, z * 0.35) - 0.45) * 0.7
         let h = THREE.MathUtils.lerp(top, terrace, sstep(zf - z, 0, 4.5))
         for (const b of basins) {
           const sd = boxSD(x, z, b, 1.2)
-          if (sd < 1.2) h = THREE.MathUtils.lerp(b.level - 0.6, h, sstep(sd, -0.3, 1.2))
+          if (sd < 1.2) h = Math.min(h, THREE.MathUtils.lerp(b.level - 0.6, h, sstep(sd, -0.3, 1.2)))
+        }
+        const ls = lakeSD(x, z)
+        if (ls < 3) h = Math.min(h, THREE.MathUtils.lerp(LD - 1.2, h, sstep(ls, -1, 3)))
+        return h
+      }
+
+      // streams winding down off the hills into the lake; their beds are carved into the ground and
+      // always run downhill
+      type Stream = { pts: THREE.Vector2[]; bed: number[]; len: number[]; w: number; box: [number, number, number, number] }
+      const streamDefs: { ctrl: [number, number][]; w: number }[] = [
+        { ctrl: [[-34, -98], [-28, -84], [-31, -72], [-22, -62], [-13, -48]], w: 0.9 },
+        { ctrl: [[6, -108], [1, -92], [8, -80], [2, -66], [-1, -51]], w: 1.1 },
+        { ctrl: [[42, -88], [31, -80], [26, -66], [17, -56], [10, -46]], w: 0.8 },
+        { ctrl: [[-48, -60], [-38, -55], [-28, -49], [-14, -42]], w: 0.6 },
+        { ctrl: [[38, -36], [30, -40], [22, -38], [11, -42]], w: 0.6 },
+        { ctrl: [[24, -112], [18, -96], [14, -78], [9, -64], [5, -52]], w: 0.7 },
+      ]
+      const streams: Stream[] = streamDefs.map((def) => {
+        const path = new THREE.CatmullRomCurve3(def.ctrl.map(([x, z]) => new THREE.Vector3(x, 0, z)))
+        const pts = path.getSpacedPoints(70).map((v) => new THREE.Vector2(v.x, v.z))
+        const bed: number[] = []
+        const len: number[] = []
+        pts.forEach((p, i) => {
+          const raw = plateauBase(p.x, p.y) - 0.7
+          bed.push(i === 0 ? raw : Math.min(bed[i - 1], raw))
+          len.push(i === 0 ? 0 : len[i - 1] + p.distanceTo(pts[i - 1]))
+        })
+        const m = def.w * 2
+        const xs = pts.map((p) => p.x)
+        const zs = pts.map((p) => p.y)
+        return { pts, bed, len, w: def.w, box: [Math.min(...xs) - m, Math.max(...xs) + m, Math.min(...zs) - m, Math.max(...zs) + m] }
+      })
+      const plateauHeight = (x: number, z: number, top?: number, zf?: number) => {
+        let h = plateauBase(x, z, top, zf)
+        for (const s of streams) {
+          if (x < s.box[0] || x > s.box[1] || z < s.box[2] || z > s.box[3]) continue
+          let best = Infinity
+          let bedHere = 0
+          for (let i = 0; i < s.pts.length - 1; i++) {
+            const a = s.pts[i]
+            const b = s.pts[i + 1]
+            const abx = b.x - a.x
+            const abz = b.y - a.y
+            const t = Math.max(0, Math.min(1, ((x - a.x) * abx + (z - a.y) * abz) / (abx * abx + abz * abz)))
+            const dx = x - (a.x + abx * t)
+            const dz = z - (a.y + abz * t)
+            const d2 = dx * dx + dz * dz
+            if (d2 < best) {
+              best = d2
+              bedHere = s.bed[i] + (s.bed[i + 1] - s.bed[i]) * t
+            }
+          }
+          // narrower than the water ribbon, so the ribbon's edges tuck into the banks
+          const d = Math.sqrt(best)
+          if (d < s.w * 1.6) h = Math.min(h, THREE.MathUtils.lerp(bedHere - 0.1, h, sstep(d, s.w * 0.5, s.w * 1.6)))
         }
         return h
       }
-      const NXT = 180
-      const NZT = 110
-      const tPos = new Float32Array((NXT + 1) * (NZT + 1) * 3)
-      for (let j = 0; j <= NZT; j++) {
-        const t = (j / NZT) ** 1.35
+      const NXT = 220
+      const NZT = 170
+      const tPos = terrainCache?.plateau ?? new Float32Array((NXT + 1) * (NZT + 1) * 3)
+      if (!terrainCache) {
         for (let i = 0; i <= NXT; i++) {
-          const x = -45 + (90 * i) / NXT
-          const zf = cliffZ(x, wallTop(x), 1)
-          const z = zf + (-60 - zf) * t
-          tPos.set([x, j === 0 ? wallTop(x) : plateauHeight(x, z), z], (j * (NXT + 1) + i) * 3)
+          const x = -55 + (110 * i) / NXT
+          const top = wallTop(x)
+          const zf = cliffZ(x, top, 1)
+          for (let j = 0; j <= NZT; j++) {
+            const z = zf + (-115 - zf) * (j / NZT) ** 1.35
+            tPos.set([x, j === 0 ? top : plateauHeight(x, z, top, zf), z], (j * (NXT + 1) + i) * 3)
+          }
         }
+        terrainCache = { cliff: verts, plateau: tPos }
       }
       const tIdx: number[] = []
       for (let j = 0; j < NZT; j++) {
@@ -8143,7 +8220,13 @@ export function createWaterfall(): VisualStyle {
       group.add(plateau)
 
       // pool water: moonlit ripples, neon glow and churn where the feeder cascade lands, beat rings
-      const makePool = (b: Basin, impact: [number, number], clipLip: boolean, streak: number) => {
+      // each pool ends at the lip of the cascade that drains it (clipZ), so no water hangs past the step
+      const makePool = (
+        b: { x0: number; x1: number; z0: number; z1: number },
+        level: number,
+        impact: [number, number],
+        opts: { clipLip?: boolean; clipZ?: number; streak: number; glowFalloff?: number },
+      ) => {
         const water = new THREE.Mesh(
           new THREE.PlaneGeometry(b.x1 - b.x0 + 1.6, b.z1 - b.z0 + 1.6),
           new THREE.ShaderMaterial({
@@ -8151,8 +8234,10 @@ export function createWaterfall(): VisualStyle {
               ...shared,
               uNoise: { value: noiseTex },
               uImpact: { value: new THREE.Vector2(impact[0], impact[1]) },
-              uClipLip: { value: clipLip ? 1 : 0 },
-              uStreak: { value: streak },
+              uClipLip: { value: opts.clipLip ? 1 : 0 },
+              uClipZ: { value: opts.clipZ ?? 10000 },
+              uStreak: { value: opts.streak },
+              uGlowK: { value: opts.glowFalloff ?? 0.35 },
             },
             vertexShader: `
               varying vec3 vWorld;
@@ -8163,7 +8248,7 @@ export function createWaterfall(): VisualStyle {
               }
             `,
             fragmentShader: `
-              uniform float uTime, uEnergy, uClipLip, uStreak;
+              uniform float uTime, uEnergy, uClipLip, uClipZ, uStreak, uGlowK;
               uniform float uBeats[${BEATS}];
               uniform float uBeatAmp[${BEATS}];
               uniform sampler2D uNoise;
@@ -8175,13 +8260,14 @@ export function createWaterfall(): VisualStyle {
                 vec2 p = vWorld.xz;
                 // the lip basin ends exactly where the water pours over the edge
                 if (uClipLip > 0.5 && p.y > lipZ(p.x / ${f(W)} + 0.5) + 0.05) discard;
+                if (p.y > uClipZ) discard;
                 float n = texture2D(uNoise, p * 0.12 - vec2(0.0, uTime * 0.05)).r;
                 float flow = texture2D(uNoise, vec2(p.x * 0.35, p.y * 0.06 - uTime * 0.12)).r;
                 vec3 col = vec3(0.004, 0.01, 0.024) * (0.6 + n * 0.8);
                 col += moonWater(p, vWorld, 0.16);
                 float di = length(p - uImpact);
                 vec3 glowCol = mix(neon(uB), neon(uA), 0.4);
-                col += glowCol * exp(-di * 0.35) * (0.08 + uEnergy * 0.12);
+                col += glowCol * exp(-di * uGlowK) * (0.08 + uEnergy * 0.12);
                 col += mix(vec3(0.75, 0.85, 1.0), glowCol, 0.4) * exp(-di * 0.9) * smoothstep(0.4, 0.8, n) * 0.2;
                 col += glowCol * smoothstep(0.55, 0.9, flow) * 0.05 * uStreak;
                 float rings = 0.0;
@@ -8200,15 +8286,90 @@ export function createWaterfall(): VisualStyle {
           }),
         )
         water.rotation.x = -Math.PI / 2
-        water.position.set((b.x0 + b.x1) / 2, b.level + 0.02, (b.z0 + b.z1) / 2)
+        water.position.set((b.x0 + b.x1) / 2, level + 0.02, (b.z0 + b.z1) / 2)
         water.frustumCulled = false
         group?.add(water)
       }
       const landing = (c: Cascade): [number, number] => [c.x, c.lipZ + c.v0 * durOf(c.drop)]
-      makePool(basins[0], landing(cascades[3]), true, 0.4)
-      makePool(basins[1], landing(cascades[4]), false, 0.4)
-      makePool(basins[2], [-2.5, -29.5], false, 0.4)
-      makePool(basins[3], [0, -400], false, 1.2)
+      makePool(basins[0], H, landing(cascades[3]), { clipLip: true, streak: 0.4 })
+      makePool(basins[1], LB, landing(cascades[4]), { clipZ: cascades[3].lipZ, streak: 0.4 })
+      makePool(basins[2], LC, landing(cascades[5]), { clipZ: cascades[4].lipZ, streak: 0.4 })
+      // the lake stops short of the terrace step; only its outlet channel runs on to the lip
+      makePool(
+        { x0: LAKE.x - LAKE.rx * 1.3, x1: LAKE.x + LAKE.rx * 1.3, z0: LAKE.z - LAKE.rz * 1.35, z1: -32.2 },
+        LD,
+        [LAKE.x, LAKE.z],
+        { clipZ: -32.2, streak: 0.25, glowFalloff: 0.07 },
+      )
+      makePool(basins[3], LD, [cascades[5].x, cascades[5].lipZ - 1.5], { clipZ: cascades[5].lipZ, streak: 0.8 })
+
+      // stream water: dark ribbons with flowing neon streaks; beat pulses start at the source and
+      // flow downstream into the lake
+      const streamMat = new THREE.ShaderMaterial({
+        side: THREE.DoubleSide,
+        uniforms: { ...shared, uNoise: { value: noiseTex } },
+        vertexShader: `
+          attribute vec2 aFlow;
+          varying vec2 vFlow;
+          varying vec3 vWorld;
+          void main() {
+            vec4 w = modelMatrix * vec4(position, 1.0);
+            vFlow = aFlow;
+            vWorld = w.xyz;
+            gl_Position = projectionMatrix * viewMatrix * w;
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime, uEnergy;
+          uniform float uBeats[${BEATS}];
+          uniform float uBeatAmp[${BEATS}];
+          uniform sampler2D uNoise;
+          varying vec2 vFlow;
+          varying vec3 vWorld;
+          ${common}
+          ${moonWater}
+          void main() {
+            float s = vFlow.y;
+            float across = abs(vFlow.x - 0.5) * 2.0;
+            float streak = texture2D(uNoise, vec2(vFlow.x * 0.6 + s * 0.02, s * 0.12 - uTime * 0.5)).r;
+            vec3 col = vec3(0.005, 0.012, 0.028) + moonWater(vWorld.xz, vWorld, 0.2) * 0.8;
+            col += mix(neon(uA), neon(uB), 0.5) * (0.05 + smoothstep(0.5, 0.85, streak) * 0.18) * (1.0 - across * 0.6) * (0.7 + uEnergy * 0.6);
+            float band = 0.0;
+            for (int i = 0; i < ${BEATS}; i++) {
+              float q = (uTime - s / 6.0 - uBeats[i]) * 2.5;
+              band += uBeatAmp[i] * exp(-q * q);
+            }
+            col += neon(uC) * band * 0.35 * (1.0 - across * 0.5);
+            col = mix(col, uFogColor, fogAmt(vWorld));
+            gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+          }
+        `,
+      })
+      for (const s of streams) {
+        const n = s.pts.length
+        const sPos = new Float32Array(n * 6)
+        const sFlow = new Float32Array(n * 4)
+        const sIdx: number[] = []
+        for (let i = 0; i < n; i++) {
+          const a = s.pts[Math.max(0, i - 1)]
+          const b = s.pts[Math.min(n - 1, i + 1)]
+          const tl = Math.hypot(b.x - a.x, b.y - a.y) || 1
+          const px = (-(b.y - a.y) / tl) * s.w * 1.4
+          const pz = ((b.x - a.x) / tl) * s.w * 1.4
+          const p = s.pts[i]
+          const y = s.bed[i] + 0.35
+          sPos.set([p.x + px, y, p.y + pz, p.x - px, y, p.y - pz], i * 6)
+          sFlow.set([0, s.len[i], 1, s.len[i]], i * 4)
+          if (i < n - 1) sIdx.push(i * 2, i * 2 + 2, i * 2 + 1, i * 2 + 1, i * 2 + 2, i * 2 + 3)
+        }
+        const sGeo = new THREE.BufferGeometry()
+        sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3))
+        sGeo.setAttribute('aFlow', new THREE.BufferAttribute(sFlow, 2))
+        sGeo.setIndex(sIdx)
+        const ribbon = new THREE.Mesh(sGeo, streamMat)
+        ribbon.frustumCulled = false
+        group.add(ribbon)
+      }
 
       // boulders on the banks, in the plunge pool, along the cliff foot and on the pool rims
       const boulderGeo = new THREE.IcosahedronGeometry(1, 3)
@@ -8241,6 +8402,260 @@ export function createWaterfall(): VisualStyle {
       })
       boulders.frustumCulled = false
       group.add(boulders)
+
+      // neon plants. Reeds grow in clusters on the shores, stream banks and around the plunge-pool
+      // rocks; each cluster brightens with its own slice of the spectrum
+      type Reed = { x: number; y: number; z: number; hue: number; band: number; h: number }
+      const reeds: Reed[] = []
+      const cluster = (cx: number, cz: number, n: number, radius: number, minY: number, tall: number, flat?: number) => {
+        const hue = rng.pick([0, 0.5, 1, 2])
+        const band = 2 + rng.int(26)
+        for (let i = 0; i < n; i++) {
+          const a = rng.next() * Math.PI * 2
+          const r = Math.sqrt(rng.next()) * radius
+          const x = cx + Math.cos(a) * r
+          const z = cz + Math.sin(a) * r
+          const y = flat ?? plateauHeight(x, z)
+          if (y < minY) continue
+          reeds.push({ x, y, z, hue, band: band + rng.int(4), h: rng.range(0.6, 1.2) * tall })
+        }
+      }
+      for (let i = 0; i < 26; i++) {
+        const a = (i / 26) * Math.PI * 2 + rng.range(-0.1, 0.1)
+        const r = lakeWob(a) * rng.range(1.08, 1.22)
+        cluster(LAKE.x + Math.cos(a) * LAKE.rx * r, LAKE.z + Math.sin(a) * LAKE.rz * r, 10, 1.1, LD + 0.05, 1.4)
+      }
+      basins.slice(0, 3).forEach((b, bi) => {
+        for (let i = 0; i < (bi === 0 ? 6 : 5); i++) {
+          const side = rng.next() < 0.5
+          const x = side ? (rng.next() < 0.5 ? b.x0 - 0.9 : b.x1 + 0.9) : rng.range(b.x0, b.x1)
+          const z = side ? rng.range(b.z0, b.z1) : b.z0 - 0.9
+          cluster(x, z, 8, 0.8, b.level + 0.05, 1.1)
+        }
+      })
+      for (const s of streams) {
+        for (let i = 0; i < 6; i++) {
+          const k = 4 + rng.int(s.pts.length - 12)
+          const p = s.pts[k]
+          const q = s.pts[k + 1]
+          const tl = Math.hypot(q.x - p.x, q.y - p.y) || 1
+          const off = (s.w * 1.8 + rng.range(0.3, 1.2)) * (rng.next() < 0.5 ? -1 : 1)
+          cluster(p.x - ((q.y - p.y) / tl) * off, p.y + ((q.x - p.x) / tl) * off, 7, 0.7, s.bed[k] + 0.5, 1)
+        }
+      }
+      // taller reeds standing in the shallows by the foreground rocks, so the low view gets them too
+      for (const [x, z, sx] of poolRocks) {
+        if (Math.abs(x) < 8) continue
+        cluster(x - Math.sign(x) * (sx * 0.9 + 0.6), z + rng.range(-1.5, 1.5), 14, 1.4, -1, 3.2, 0)
+      }
+      const reedGeo = new THREE.PlaneGeometry(1, 1, 1, 4)
+      reedGeo.translate(0, 0.5, 0)
+      const reedAttr = new THREE.InstancedBufferAttribute(new Float32Array(reeds.length * 2), 2)
+      reedGeo.setAttribute('aReed', reedAttr)
+      const swayGLSL = `
+        vec2 sway(vec2 p, float t) {
+          return vec2(sin(t * 0.9 + p.x * 0.4 + p.y * 0.3), cos(t * 0.7 + p.y * 0.45)) * 0.12;
+        }
+      `
+      const reedMesh = new THREE.InstancedMesh(
+        reedGeo,
+        new THREE.ShaderMaterial({
+          side: THREE.DoubleSide,
+          uniforms: { ...shared },
+          vertexShader: `
+            uniform float uTime;
+            attribute vec2 aReed;
+            varying float vH;
+            varying vec2 vReed;
+            varying vec3 vWorld;
+            ${swayGLSL}
+            void main() {
+              float h = uv.y;
+              vec3 p = position;
+              p.x *= 0.1 * (1.0 - h * 0.75);
+              vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+              w.xz += sway(instanceMatrix[3].xz, uTime) * h * h;
+              vH = h;
+              vReed = aReed;
+              vWorld = w.xyz;
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform float uBeat;
+            uniform float uSpec[32];
+            varying float vH;
+            varying vec2 vReed;
+            varying vec3 vWorld;
+            ${common}
+            void main() {
+              float eq = uSpec[int(clamp(vReed.y, 0.0, 31.0))];
+              vec3 tip = neon(pickCol(vReed.x)) * (0.6 + eq * 1.6 + uBeat * 0.4);
+              vec3 col = mix(vec3(0.004, 0.012, 0.012), tip, smoothstep(0.3, 1.0, vH));
+              col = mix(col, uFogColor, fogAmt(vWorld));
+              gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+            }
+          `,
+        }),
+        reeds.length,
+      )
+      const bulbPos: number[] = []
+      const bulbInfo: number[] = []
+      reeds.forEach((r, i) => {
+        dummy.position.set(r.x, r.y - 0.05, r.z)
+        dummy.rotation.set(rng.range(-0.15, 0.15), rng.next() * Math.PI, rng.range(-0.15, 0.15))
+        dummy.scale.set(1, r.h, 1)
+        dummy.updateMatrix()
+        reedMesh.setMatrixAt(i, dummy.matrix)
+        reedAttr.setXY(i, r.hue, r.band)
+        if (rng.next() < 0.6) {
+          bulbPos.push(r.x, r.y - 0.05 + r.h, r.z)
+          bulbInfo.push(r.hue, r.band, r.x, r.z)
+        }
+      })
+      reedMesh.frustumCulled = false
+      group.add(reedMesh)
+      // a glowing bulb on most reed tips, riding the same sway
+      const bulbGeo = new THREE.BufferGeometry()
+      bulbGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bulbPos), 3))
+      bulbGeo.setAttribute('aInfo', new THREE.BufferAttribute(new Float32Array(bulbInfo), 4))
+      const bulbs = new THREE.Points(
+        bulbGeo,
+        additive(
+          `
+          uniform float uTime, uScale, uBeat;
+          uniform float uSpec[32];
+          attribute vec4 aInfo;
+          varying vec3 vCol;
+          ${common}
+          ${swayGLSL}
+          void main() {
+            vec3 p = position;
+            p.xz += sway(aInfo.zw, uTime);
+            vec4 wp = modelMatrix * vec4(p, 1.0);
+            vec4 mv = viewMatrix * wp;
+            float eq = uSpec[int(clamp(aInfo.y, 0.0, 31.0))];
+            gl_PointSize = min((0.24 + eq * 0.16) * uScale / max(-mv.z, 0.1), uScale * 0.05);
+            gl_Position = projectionMatrix * mv;
+            vCol = neon(pickCol(aInfo.x)) * (0.7 + eq * 1.6 + uBeat * 0.6) * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '3.0',
+        ),
+      )
+      bulbs.frustumCulled = false
+      group.add(bulbs)
+
+      // lily pads with glowing flowers, bobbing on the lake and the upper pools
+      const lilies: [number, number, number, number][] = []
+      for (let i = 0; i < 55; i++) {
+        const a = rng.next() * Math.PI * 2
+        const r = Math.sqrt(rng.next()) * lakeWob(a) * 0.8
+        lilies.push([LAKE.x + Math.cos(a) * LAKE.rx * r, LD, LAKE.z + Math.sin(a) * LAKE.rz * r, rng.range(0.4, 0.95)])
+      }
+      ;[basins[1], basins[2]].forEach((b) => {
+        for (let i = 0; i < 7; i++) lilies.push([rng.range(b.x0 + 1, b.x1 - 1), b.level, rng.range(b.z0 + 1, b.z1 - 1.5), rng.range(0.35, 0.7)])
+      })
+      const lilyGeo = new THREE.CircleGeometry(1, 28)
+      lilyGeo.rotateX(-Math.PI / 2)
+      const lilyAttr = new THREE.InstancedBufferAttribute(new Float32Array(lilies.length * 3), 3)
+      lilyGeo.setAttribute('aLily', lilyAttr)
+      const lilyMesh = new THREE.InstancedMesh(
+        lilyGeo,
+        new THREE.ShaderMaterial({
+          uniforms: { ...shared },
+          vertexShader: `
+            uniform float uTime;
+            attribute vec3 aLily;
+            varying vec2 vLocal;
+            varying vec3 vLily;
+            varying vec3 vWorld;
+            void main() {
+              vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0);
+              w.y += sin(uTime * 1.3 + aLily.z * 6.2831853) * 0.03;
+              vLocal = position.xz;
+              vLily = aLily;
+              vWorld = w.xyz;
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform float uBeat;
+            uniform float uSpec[32];
+            varying vec2 vLocal;
+            varying vec3 vLily;
+            varying vec3 vWorld;
+            ${common}
+            void main() {
+              float r = length(vLocal);
+              float ang = atan(vLocal.y, vLocal.x + 0.0001);
+              if (r > 0.2 && abs(ang) < 0.28) discard;
+              float eq = uSpec[int(clamp(vLily.y, 0.0, 31.0))];
+              vec3 c = neon(pickCol(vLily.x));
+              vec3 col = vec3(0.01, 0.03, 0.025) * (0.7 + 0.3 * cos(ang * 9.0));
+              col += c * smoothstep(0.8, 1.0, r) * (0.15 + eq * 0.6);
+              float petals = 1.0 - smoothstep(0.22, 0.34, r * (1.0 + 0.35 * abs(cos(ang * 3.0))));
+              col = mix(col, c * (0.6 + eq * 2.0 + uBeat * 0.8) + vec3(0.15), petals);
+              col = mix(col, uFogColor, fogAmt(vWorld));
+              gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+            }
+          `,
+        }),
+        lilies.length,
+      )
+      lilies.forEach(([x, level, z, s], i) => {
+        dummy.position.set(x, level + 0.05, z)
+        dummy.rotation.set(0, rng.next() * Math.PI * 2, 0)
+        dummy.scale.setScalar(s)
+        dummy.updateMatrix()
+        lilyMesh.setMatrixAt(i, dummy.matrix)
+        lilyAttr.setXYZ(i, rng.pick([0, 0.5, 1, 2]), 2 + rng.int(28), rng.next())
+      })
+      lilyMesh.frustumCulled = false
+      group.add(lilyMesh)
+
+      // bioluminescent moss in patches on the cliff face, twinkling with the mids
+      const MOSS = 2600
+      const mossPos = new Float32Array(MOSS * 3)
+      const mossInfo = new Float32Array(MOSS * 2)
+      const patchCount = 40
+      for (let i = 0; i < MOSS; i++) {
+        const pi = i % patchCount
+        const pr = styleRng(pi * 97 + 13)
+        const side = pr.next() < 0.5 ? -1 : 1
+        const px = side * pr.range(W / 2 + 1.5, 34)
+        const py = pr.range(1.5, wallTop(px) - 2)
+        const x = px + (rng.next() - 0.5) * 2.2
+        const y = Math.max(0.5, py + (rng.next() - 0.5) * 1.8)
+        const top = wallTop(x)
+        mossPos.set([x, Math.min(y, top - 0.3), cliffZ(x, Math.min(y, top - 0.3), Math.min(y, top - 0.3) / top) + 0.2], i * 3)
+        mossInfo.set([pi % 2 === 0 ? 1 : 2, rng.next()], i * 2)
+      }
+      const mossGeo = new THREE.BufferGeometry()
+      mossGeo.setAttribute('position', new THREE.BufferAttribute(mossPos, 3))
+      mossGeo.setAttribute('aInfo', new THREE.BufferAttribute(mossInfo, 2))
+      const moss = new THREE.Points(
+        mossGeo,
+        additive(
+          `
+          uniform float uTime, uScale, uMid;
+          attribute vec2 aInfo;
+          varying vec3 vCol;
+          ${common}
+          void main() {
+            vec4 wp = modelMatrix * vec4(position, 1.0);
+            vec4 mv = viewMatrix * wp;
+            float tw = 0.5 + 0.5 * sin(uTime * (1.2 + aInfo.y * 2.5) + aInfo.y * 40.0);
+            gl_PointSize = min(0.17 * uScale / max(-mv.z, 0.1), uScale * 0.03);
+            gl_Position = projectionMatrix * mv;
+            vCol = neon(pickCol(aInfo.x)) * (0.25 + tw * 0.5) * (0.7 + uMid * 1.2) * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '3.0',
+        ),
+      )
+      moss.frustumCulled = false
+      group.add(moss)
 
       // a palette-coloured moonbow hanging in the mist
       const bow = new THREE.Mesh(
@@ -8312,12 +8727,14 @@ export function createWaterfall(): VisualStyle {
       const crane = lift * lift * (3 - 2 * lift)
       const lerp = THREE.MathUtils.lerp
       cameraRef.position.set(
-        lerp(sway, sway * 0.4, crane),
-        lerp(8.5 + Math.sin(clock * 0.07) * 1.5, 44, crane),
-        lerp(44 + Math.sin(clock * 0.035) * 3, 50, crane),
+        lerp(sway, sway * 0.9, crane),
+        lerp(8.5 + Math.sin(clock * 0.07) * 1.5, 64, crane),
+        lerp(44 + Math.sin(clock * 0.035) * 3, 30, crane),
       )
-      cameraRef.lookAt(lerp(sway * 0.2, sway * 0.1, crane), lerp(13 + Math.sin(clock * 0.05), 26, crane), lerp(0, -14, crane))
+      cameraRef.lookAt(lerp(sway * 0.2, sway * 0.3, crane), lerp(13 + Math.sin(clock * 0.05), 28, crane), lerp(0, -30, crane))
       sky.position.copy(cameraRef.position)
+      // the air clears as the camera climbs, so the lake and streams far back stay readable
+      shared.uFog.value = lerp(0.009, 0.0055, crane)
     },
     resize(_w, h) {
       shared.uScale.value = h * Math.min(window.devicePixelRatio, 2) * 0.5
