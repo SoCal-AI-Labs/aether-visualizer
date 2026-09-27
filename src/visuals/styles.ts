@@ -5900,6 +5900,50 @@ export function createRainWindow(): VisualStyle {
   }
 }
 
+// tileable fbm baked once (R: 4-octave fbm, G: fine single octave) so full-screen layers can sample
+// a texture instead of evaluating noise per pixel
+function bakeNoiseTexture() {
+  const N = 256
+  const rng = styleRng(7919)
+  const octave = (period: number) => {
+    const grid = Float32Array.from({ length: period * period }, () => rng.next())
+    return (x: number, y: number) => {
+      const fx = (x / N) * period
+      const fy = (y / N) * period
+      const x0 = Math.floor(fx)
+      const y0 = Math.floor(fy)
+      const sx = (fx - x0) * (fx - x0) * (3 - 2 * (fx - x0))
+      const sy = (fy - y0) * (fy - y0) * (3 - 2 * (fy - y0))
+      const g = (i: number, j: number) => grid[(j % period) * period + (i % period)]
+      const a = g(x0, y0)
+      const b = g(x0 + 1, y0)
+      const c = g(x0, y0 + 1)
+      const d = g(x0 + 1, y0 + 1)
+      return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
+    }
+  }
+  const o = [octave(8), octave(16), octave(32), octave(64)]
+  const data = new Uint8Array(N * N * 4)
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const fine = o[3](x, y)
+      const v = (o[0](x, y) * 0.5 + o[1](x, y) * 0.25 + o[2](x, y) * 0.125 + fine * 0.0625) / 0.9375
+      const i = (y * N + x) * 4
+      data[i] = Math.round(v * 255)
+      data[i + 1] = Math.round(fine * 255)
+      data[i + 3] = 255
+    }
+  }
+  const tex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.RepeatWrapping
+  tex.magFilter = THREE.LinearFilter
+  tex.minFilter = THREE.LinearMipmapLinearFilter
+  tex.generateMipmaps = true
+  tex.needsUpdate = true
+  return tex
+}
+
 export function createButterfly(): VisualStyle {
   let group: THREE.Group | null = null
   let cameraRef: THREE.PerspectiveCamera | null = null
@@ -6113,49 +6157,6 @@ export function createButterfly(): VisualStyle {
     return mergeGeometries(parts) ?? abdomen
   }
 
-  // tileable fbm baked once (R: 4-octave fbm, G: fine single octave) so the full-screen ground and
-  // mist layers sample a texture instead of evaluating noise per pixel
-  const bakeNoise = () => {
-    const N = 256
-    const rng = styleRng(7919)
-    const octave = (period: number) => {
-      const grid = Float32Array.from({ length: period * period }, () => rng.next())
-      return (x: number, y: number) => {
-        const fx = (x / N) * period
-        const fy = (y / N) * period
-        const x0 = Math.floor(fx)
-        const y0 = Math.floor(fy)
-        const sx = (fx - x0) * (fx - x0) * (3 - 2 * (fx - x0))
-        const sy = (fy - y0) * (fy - y0) * (3 - 2 * (fy - y0))
-        const g = (i: number, j: number) => grid[(j % period) * period + (i % period)]
-        const a = g(x0, y0)
-        const b = g(x0 + 1, y0)
-        const c = g(x0, y0 + 1)
-        const d = g(x0 + 1, y0 + 1)
-        return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
-      }
-    }
-    const o = [octave(8), octave(16), octave(32), octave(64)]
-    const data = new Uint8Array(N * N * 4)
-    for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) {
-        const fine = o[3](x, y)
-        const v = (o[0](x, y) * 0.5 + o[1](x, y) * 0.25 + o[2](x, y) * 0.125 + fine * 0.0625) / 0.9375
-        const i = (y * N + x) * 4
-        data[i] = Math.round(v * 255)
-        data[i + 1] = Math.round(fine * 255)
-        data[i + 3] = 255
-      }
-    }
-    const tex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat)
-    tex.wrapS = THREE.RepeatWrapping
-    tex.wrapT = THREE.RepeatWrapping
-    tex.magFilter = THREE.LinearFilter
-    tex.minFilter = THREE.LinearMipmapLinearFilter
-    tex.generateMipmaps = true
-    tex.needsUpdate = true
-    return tex
-  }
   let noiseTex: THREE.DataTexture | null = null
 
   const wanderTarget = (f: Fly, t: number, out: THREE.Vector3) =>
@@ -6342,7 +6343,7 @@ export function createButterfly(): VisualStyle {
       sky.frustumCulled = false
       group.add(sky)
 
-      noiseTex = bakeNoise()
+      noiseTex = bakeNoiseTexture()
       const groundMat = new THREE.ShaderMaterial({
         uniforms: { ...shared, uNoise: { value: noiseTex } },
         vertexShader: `
@@ -7373,6 +7374,576 @@ export function createButterfly(): VisualStyle {
   }
 }
 
+export function createWaterfall(): VisualStyle {
+  let group: THREE.Group | null = null
+  let cameraRef: THREE.PerspectiveCamera | null = null
+  let sky: THREE.Mesh | null = null
+  let noiseTex: THREE.DataTexture | null = null
+  const uA = new THREE.Color()
+  const uB = new THREE.Color()
+  const uC = new THREE.Color()
+  const fogColor = new THREE.Color(0.008, 0.012, 0.028)
+  const H = 24
+  const W = 14
+  const D = 2.6
+  const IMPACT = 1.75 * D
+  const BEATS = 8
+  const FALL = 150000
+  const SPLASH = 14000
+  const MIST = 420
+  const SPARKS = 1500
+  const LIP = 420
+  const f = (n: number) => n.toFixed(3)
+  const beatTimes = new Float32Array(BEATS).fill(-1000)
+  const beatAmps = new Float32Array(BEATS)
+  const spec = new Float32Array(32)
+  let beatIdx = 0
+  let clock = 0
+  let bassS = 0
+  const shared = {
+    uA: { value: uA },
+    uB: { value: uB },
+    uC: { value: uC },
+    uFogColor: { value: fogColor },
+    uFog: { value: 0.011 },
+    uTime: { value: 0 },
+    uEnergy: { value: 0 },
+    uBass: { value: 0 },
+    uMid: { value: 0 },
+    uTreble: { value: 0 },
+    uBeat: { value: 0 },
+    uSplash: { value: 1 },
+    uScale: { value: 500 },
+    uBeats: { value: beatTimes },
+    uBeatAmp: { value: beatAmps },
+    uSpec: { value: spec },
+  }
+
+  const common = `
+    uniform vec3 uA, uB, uC, uFogColor;
+    uniform float uFog;
+    vec3 neon(vec3 c) {
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
+      vec3 s = max(mix(vec3(l), c, 2.3), vec3(0.0));
+      return s * (0.66 / max(dot(s, vec3(0.299, 0.587, 0.114)), 0.05));
+    }
+    vec3 pickCol(float t) { return t < 1.0 ? mix(uA, uB, t) : mix(uB, uC, clamp(t - 1.0, 0.0, 1.0)); }
+    float fogAmt(vec3 w) {
+      float d = distance(w, cameraPosition) * uFog;
+      return 1.0 - exp(-d * d);
+    }
+    // the lip is a horseshoe: the sides are recessed behind the centre
+    float lipZ(float u) {
+      float k = (u - 0.5) * 2.0;
+      return -1.2 * k * k;
+    }
+  `
+  const pointFrag = (falloff: string) => `
+    varying vec3 vCol;
+    void main() {
+      float r = length(gl_PointCoord - 0.5) * 2.0;
+      float a = exp(-r * r * ${falloff}) * (1.0 - smoothstep(0.8, 1.0, r));
+      gl_FragColor = vec4(vCol, a);
+    }
+  `
+  const additive = (vertexShader: string, falloff: string) =>
+    new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: { ...shared },
+      vertexShader,
+      fragmentShader: pointFrag(falloff),
+    })
+  const seededPoints = (count: number, rng: ReturnType<typeof styleRng>) => {
+    const seeds = new Float32Array(count * 4)
+    for (let i = 0; i < seeds.length; i++) seeds[i] = rng.next()
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3))
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4))
+    return geo
+  }
+
+  const hash2 = (i: number, j: number) => {
+    const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453
+    return s - Math.floor(s)
+  }
+  const vnoise = (x: number, y: number) => {
+    const xi = Math.floor(x)
+    const yi = Math.floor(y)
+    const u = (x - xi) * (x - xi) * (3 - 2 * (x - xi))
+    const v = (y - yi) * (y - yi) * (3 - 2 * (y - yi))
+    const a = hash2(xi, yi)
+    const b = hash2(xi + 1, yi)
+    const c = hash2(xi, yi + 1)
+    const d = hash2(xi + 1, yi + 1)
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v
+  }
+  const fbm2 = (x: number, y: number) => vnoise(x, y) * 0.5 + vnoise(x * 2.1 + 5.2, y * 2.1 + 1.3) * 0.25 + vnoise(x * 4.3 + 9.1, y * 4.3 + 2.7) * 0.125
+
+  return {
+    id: 'waterfall',
+    label: 'Waterfall',
+    hint: 'Neon particle cascade',
+    bloom: { base: 0.45, pulse: 0.26 },
+    mount(scene, camera, palette) {
+      cameraRef = camera
+      camera.position.set(0, 4.5, 31)
+      camera.lookAt(0, 11, 0)
+      scene.fog = null
+      scene.background = fogColor.clone()
+      group = new THREE.Group()
+      const rng = styleRng(palette.seed)
+      colorFrom(palette.a, uA)
+      colorFrom(palette.b, uB)
+      colorFrom(palette.c, uC)
+      shared.uScale.value = window.innerHeight * Math.min(window.devicePixelRatio, 2) * 0.5
+      beatTimes.fill(-1000)
+      beatAmps.fill(0)
+      spec.fill(0)
+      beatIdx = 0
+      clock = 0
+      bassS = 0
+      noiseTex = bakeNoiseTexture()
+
+      // night sky with stars and the neon haze of the mist glowing above the falls
+      sky = new THREE.Mesh(
+        new THREE.SphereGeometry(200, 48, 24),
+        new THREE.ShaderMaterial({
+          side: THREE.BackSide,
+          depthWrite: false,
+          uniforms: { ...shared },
+          vertexShader: `
+            varying vec3 vDir;
+            void main() {
+              vDir = position;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            uniform float uTime, uEnergy, uBeat;
+            varying vec3 vDir;
+            ${common}
+            float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+            void main() {
+              vec3 d = normalize(vDir);
+              float el = d.y;
+              vec3 col = mix(vec3(0.022, 0.02, 0.055), vec3(0.004, 0.006, 0.02), smoothstep(0.0, 0.6, el));
+              float towardFalls = max(0.0, -d.z);
+              col += mix(neon(uB), neon(uA), 0.5) * exp(-max(el - 0.1, 0.0) * 4.0) * pow(towardFalls, 6.0) * (0.06 + uEnergy * 0.06);
+              float h = hash3(floor(d * 170.0));
+              float star = step(0.9965, h) * (1.0 - smoothstep(0.08, 0.32, length(fract(d * 170.0) - 0.5)));
+              float tw = 0.55 + 0.45 * sin(uTime * (1.5 + h * 3.0) + h * 40.0);
+              vec3 starCol = mix(vec3(0.85, 0.9, 1.0), neon(mix(uA, uC, fract(h * 7.0))), uBeat * 0.8);
+              col += starCol * star * tw * smoothstep(0.05, 0.3, el) * 1.3;
+              gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+            }
+          `,
+        }),
+      )
+      sky.renderOrder = 1
+      sky.frustumCulled = false
+      group.add(sky)
+
+      // the cliff: a horseshoe notch where the river pours over, flanked by walls that curve forward
+      const NX = 240
+      const NY = 80
+      const verts = new Float32Array((NX + 1) * (NY + 1) * 3)
+      for (let j = 0; j <= NY; j++) {
+        const v = j / NY
+        for (let i = 0; i <= NX; i++) {
+          const x = -60 + (120 * i) / NX
+          const ax = Math.abs(x)
+          const notch = 1 - THREE.MathUtils.smoothstep(ax, W / 2 - 0.5, W / 2 + 2)
+          const rise = Math.min(1, Math.max(0, (ax - W / 2) / 12))
+          const topY = H + (1 - notch) * (1.5 + rise * 6 + fbm2(x * 0.07, 3.1) * 8)
+          const y = v * topY
+          const k = Math.min(1, (x / (W / 2)) ** 2)
+          let z = notch * (-2.3 - 1.2 * k) + (1 - notch) * (-2.2 + 0.011 * Math.max(0, ax - W / 2) ** 2)
+          z += (fbm2(x * 0.16, y * 0.16) - 0.45) * 2.6 * (0.35 + 0.65 * (1 - notch))
+          z += notch * THREE.MathUtils.smoothstep(v, 0.93, 1) * 1.1
+          verts.set([x, y, z], (j * (NX + 1) + i) * 3)
+        }
+      }
+      const idx: number[] = []
+      for (let j = 0; j < NY; j++) {
+        for (let i = 0; i < NX; i++) {
+          const a = j * (NX + 1) + i
+          idx.push(a, a + 1, a + NX + 1, a + 1, a + NX + 2, a + NX + 1)
+        }
+      }
+      const cliffGeo = new THREE.BufferGeometry()
+      cliffGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+      cliffGeo.setIndex(idx)
+      cliffGeo.computeVertexNormals()
+      const cliff = new THREE.Mesh(
+        cliffGeo,
+        new THREE.ShaderMaterial({
+          side: THREE.DoubleSide,
+          uniforms: { ...shared, uNoise: { value: noiseTex } },
+          vertexShader: `
+            varying vec3 vWorld;
+            varying vec3 vN;
+            void main() {
+              vec4 w = modelMatrix * vec4(position, 1.0);
+              vWorld = w.xyz;
+              vN = normalize(mat3(modelMatrix) * normal);
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform float uTime, uEnergy, uBass;
+            uniform sampler2D uNoise;
+            varying vec3 vWorld;
+            varying vec3 vN;
+            ${common}
+            void main() {
+              vec2 q = vWorld.xy * 0.06 + vWorld.z * 0.02;
+              float n = texture2D(uNoise, q).r;
+              float n2 = texture2D(uNoise, q * 4.0).g;
+              vec3 rock = vec3(0.022, 0.024, 0.034) * (0.6 + n * 0.8) * (0.8 + n2 * 0.4);
+              rock *= 0.85 + 0.15 * sin(vWorld.y * 1.7 + n * 6.0);
+              rock += vec3(0.03, 0.035, 0.05) * max(dot(normalize(vN), normalize(vec3(-0.4, 0.6, 0.7))), 0.0) * 0.6;
+              // wet rock catching the neon glow of the falls
+              float nearFall = exp(-max(abs(vWorld.x) - ${f(W / 2)}, 0.0) * 0.16) * smoothstep(-4.0, ${f(H)}, vWorld.y);
+              vec3 glow = mix(neon(uB), neon(uA), clamp(vWorld.y / ${f(H)}, 0.0, 1.0)) * nearFall * (0.06 + uEnergy * 0.1);
+              // neon mineral veins that pulse with the bass
+              float vn = texture2D(uNoise, vWorld.xy * 0.03 + vec2(vWorld.z * 0.01, 5.0)).r;
+              float w = fwidth(vn) * 1.5 + 0.004;
+              float vein = 1.0 - smoothstep(0.0, w + 0.01 + uBass * 0.006, abs(vn - 0.52));
+              float pulse = 0.55 + 0.45 * sin(uTime * 1.5 - vWorld.y * 0.4 + vn * 8.0);
+              vec3 veinCol = neon(uC) * vein * (0.25 + uBass * 1.3) * pulse;
+              vec3 col = rock + glow + veinCol;
+              col = mix(col, uFogColor, fogAmt(vWorld));
+              gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+            }
+          `,
+        }),
+      )
+      cliff.frustumCulled = false
+      group.add(cliff)
+
+      // plunge pool: dark rippled water mirroring the falls, foam at the impact line, beat rings
+      const pool = new THREE.Mesh(
+        new THREE.PlaneGeometry(150, 100),
+        new THREE.ShaderMaterial({
+          uniforms: { ...shared, uNoise: { value: noiseTex } },
+          vertexShader: `
+            varying vec3 vWorld;
+            void main() {
+              vec4 w = modelMatrix * vec4(position, 1.0);
+              vWorld = w.xyz;
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform float uTime, uEnergy;
+            uniform float uBeats[${BEATS}];
+            uniform float uBeatAmp[${BEATS}];
+            uniform sampler2D uNoise;
+            varying vec3 vWorld;
+            ${common}
+            void main() {
+              vec2 p = vWorld.xz;
+              float zi = ${f(IMPACT)};
+              float n = texture2D(uNoise, p * 0.05 + vec2(0.0, uTime * 0.02)).r;
+              float n2 = texture2D(uNoise, p * 0.13 - vec2(uTime * 0.03, 0.0)).g;
+              vec3 col = vec3(0.004, 0.01, 0.022) * (0.6 + n * 0.8);
+              float inFall = smoothstep(${f(W / 2 + 1.5)}, ${f(W / 2 - 1.0)}, abs(p.x + (n2 - 0.5) * 1.5));
+              float nearBase = exp(-max(p.y - zi, 0.0) * 0.07);
+              col += mix(neon(uB), neon(uA), 0.3) * inFall * nearBase * (0.07 + uEnergy * 0.12) * (0.5 + n2);
+              float fd = (p.y - zi) * 0.6;
+              col += mix(vec3(0.7, 0.8, 0.95), neon(uC), 0.3) * exp(-fd * fd) * inFall * (0.3 + n * 0.6) * 0.18;
+              float rings = 0.0;
+              for (int i = 0; i < ${BEATS}; i++) {
+                float age = uTime - uBeats[i];
+                if (age > 0.0 && age < 6.0) {
+                  float dd = length(vec2(p.x * 0.55, p.y - zi)) - age * 5.0;
+                  rings += uBeatAmp[i] * exp(-dd * dd * 2.0) * (1.0 - age / 6.0);
+                }
+              }
+              col += neon(uC) * rings * 0.3 * step(zi - 1.0, p.y) * (0.7 + n2 * 0.6);
+              col = mix(col, uFogColor, fogAmt(vWorld));
+              gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+            }
+          `,
+        }),
+      )
+      pool.rotation.x = -Math.PI / 2
+      pool.position.z = 35
+      pool.frustumCulled = false
+      group.add(pool)
+
+      // the falls: every drop is placed on the GPU from its seed and the clock. Beats ride down the
+      // curtain as neon bands (a drop glows if it left the lip at a beat) and the curtain doubles as
+      // an equalizer: bass in the middle, treble at the edges.
+      const falls = new THREE.Points(
+        seededPoints(FALL, rng),
+        additive(
+          `
+          uniform float uTime, uScale, uTreble, uEnergy;
+          uniform float uBeats[${BEATS}];
+          uniform float uBeatAmp[${BEATS}];
+          uniform float uSpec[32];
+          attribute vec4 aSeed;
+          varying vec3 vCol;
+          ${common}
+          void main() {
+            float s = aSeed.z;
+            float side = s < 0.12 ? (s < 0.06 ? -1.0 : 1.0) : 0.0;
+            float u = aSeed.x;
+            float strand = (floor(u * 90.0) + 0.5 + (aSeed.w - 0.5) * 0.4) / 90.0;
+            u = s > 0.4 ? strand : u;
+            float top = side == 0.0 ? ${f(H)} : ${f(H - 6)};
+            float dur = side == 0.0 ? ${f(D)} : ${f(D * Math.sqrt((H - 6) / H))};
+            float g = 2.0 * top / (dur * dur);
+            float age = fract(uTime / dur + aSeed.y);
+            float t = age * dur;
+            float x0 = side == 0.0 ? (u - 0.5) * ${f(W)} : side * (${f(W / 2 + 4.5)} + (u - 0.5) * 1.4);
+            float z0 = side == 0.0 ? lipZ(u) : 0.2;
+            float v0 = side == 0.0 ? 1.4 + aSeed.w * 0.7 : 0.5 + aSeed.w * 0.4;
+            float spray = s > 0.12 && s < 0.2 ? 1.0 : 0.0;
+            float spread = t * t * (0.18 + spray * 0.8);
+            vec3 p = vec3(
+              x0 + (aSeed.w - 0.5) * spread * 1.6 + sin(t * 3.0 + aSeed.y * 40.0) * 0.06 * t,
+              top - 0.5 * g * t * t,
+              z0 + v0 * t + (fract(aSeed.y * 7.31) - 0.5) * spread
+            );
+            p.z += sin(uTime * 0.7 + x0 * 0.35) * 0.3 * age;
+            float te = uTime - t;
+            float band = 0.0;
+            for (int i = 0; i < ${BEATS}; i++) {
+              float q = (te - uBeats[i]) * 7.0;
+              band += uBeatAmp[i] * exp(-q * q);
+            }
+            int bin = int(clamp(abs(u - 0.5) * 2.0, 0.0, 0.999) * 32.0);
+            float eq = side == 0.0 ? uSpec[bin] : uEnergy * 0.6;
+            vec3 c = mix(neon(uA), neon(uB), smoothstep(0.05, 0.95, age));
+            c = mix(c, vec3(0.85, 0.95, 1.0), 0.22);
+            float shimmer = 0.5 + 0.5 * sin(aSeed.y * 60.0 + uTime * 9.0);
+            c = c * (0.05 + eq * 0.2 + uTreble * shimmer * 0.04) + neon(uC) * band * 0.4;
+            vec4 wp = modelMatrix * vec4(p, 1.0);
+            vec4 mv = viewMatrix * wp;
+            gl_PointSize = min((0.05 + age * 0.06 + spray * 0.04) * uScale / max(-mv.z, 0.1), uScale * 0.05);
+            gl_Position = projectionMatrix * mv;
+            float fade = smoothstep(0.0, 0.03, age) * (1.0 - smoothstep(0.94, 1.0, age));
+            vCol = c * fade * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '3.5',
+        ),
+      )
+      falls.frustumCulled = false
+      group.add(falls)
+
+      // splash: spray thrown up along the impact line, higher with the bass
+      const splash = new THREE.Points(
+        seededPoints(SPLASH, rng),
+        additive(
+          `
+          uniform float uTime, uScale, uSplash;
+          attribute vec4 aSeed;
+          varying vec3 vCol;
+          ${common}
+          void main() {
+            float age = fract(uTime / 1.3 + aSeed.y);
+            float t = age * 1.3;
+            float u = aSeed.x;
+            float ang = aSeed.z * 6.2831853;
+            float sp = 0.5 + aSeed.w * 2.0;
+            float vy = (1.2 + aSeed.w * aSeed.w * 4.5) * uSplash;
+            vec3 p = vec3((u - 0.5) * ${f(W * 1.02)} + cos(ang) * sp * t, vy * t - 4.5 * t * t, lipZ(u) + ${f(IMPACT)} + sin(ang) * sp * t * 1.3);
+            float alive = step(0.0, p.y);
+            vec4 wp = modelMatrix * vec4(p, 1.0);
+            vec4 mv = viewMatrix * wp;
+            gl_PointSize = min((0.07 + aSeed.w * 0.06) * uScale / max(-mv.z, 0.1), uScale * 0.05) * alive;
+            gl_Position = projectionMatrix * mv;
+            vCol = mix(vec3(0.8, 0.9, 1.0), neon(uC), 0.45) * 0.12 * (1.0 - age) * alive * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '3.5',
+        ),
+      )
+      splash.frustumCulled = false
+      group.add(splash)
+
+      // billowing mist rising from the plunge pool
+      const mist = new THREE.Points(
+        seededPoints(MIST, rng),
+        additive(
+          `
+          uniform float uTime, uScale, uEnergy;
+          attribute vec4 aSeed;
+          varying vec3 vCol;
+          ${common}
+          void main() {
+            float age = fract(uTime * 0.03 + aSeed.y);
+            vec3 p = vec3((aSeed.x - 0.5) * ${f(W * 2)} + sin(uTime * 0.15 + aSeed.w * 20.0) * 1.5, age * 15.0 + 0.5, ${f(IMPACT)} + (aSeed.z - 0.5) * 10.0);
+            vec4 wp = modelMatrix * vec4(p, 1.0);
+            vec4 mv = viewMatrix * wp;
+            gl_PointSize = min((2.5 + aSeed.w * 3.0) * (0.7 + age * 0.8) * uScale / max(-mv.z, 0.1), uScale * 0.35);
+            gl_Position = projectionMatrix * mv;
+            vCol = mix(vec3(0.45, 0.5, 0.62), neon(uB), 0.4) * 0.03 * sin(age * 3.14159) * (0.7 + uEnergy * 0.9) * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '2.2',
+        ),
+      )
+      mist.frustumCulled = false
+      group.add(mist)
+
+      // neon motes drifting up out of the spray
+      const sparks = new THREE.Points(
+        seededPoints(SPARKS, rng),
+        additive(
+          `
+          uniform float uTime, uScale, uBeat, uTreble;
+          attribute vec4 aSeed;
+          varying vec3 vCol;
+          ${common}
+          void main() {
+            float age = fract(uTime * 0.05 + aSeed.y);
+            vec3 p = vec3(
+              (aSeed.x - 0.5) * ${f(W * 2.4)} + sin(uTime * 0.5 + aSeed.w * 30.0) * 0.8,
+              age * 28.0,
+              ${f(IMPACT)} + (aSeed.z - 0.5) * 14.0 + cos(uTime * 0.4 + aSeed.w * 20.0) * 0.8
+            );
+            vec4 wp = modelMatrix * vec4(p, 1.0);
+            vec4 mv = viewMatrix * wp;
+            gl_PointSize = min(0.09 * uScale / max(-mv.z, 0.1), uScale * 0.04);
+            gl_Position = projectionMatrix * mv;
+            float tw = 0.5 + 0.5 * sin(uTime * (3.0 + aSeed.w * 4.0) + aSeed.y * 50.0);
+            float pk = aSeed.w < 0.33 ? 0.0 : (aSeed.w < 0.66 ? 1.0 : 2.0);
+            vCol = neon(pickCol(pk)) * (0.2 + tw * 0.8) * (0.3 + uBeat * 0.7 + uTreble * 0.5) * sin(age * 3.14159) * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '4.0',
+        ),
+      )
+      sparks.frustumCulled = false
+      group.add(sparks)
+
+      // glowing neon rim along the lip, pulsing with the bass
+      const lipGeo = new THREE.BufferGeometry()
+      const lipPos = new Float32Array(LIP * 3)
+      const lipU = new Float32Array(LIP)
+      for (let i = 0; i < LIP; i++) {
+        const u = i / (LIP - 1)
+        const k = (u - 0.5) * 2
+        lipPos.set([(u - 0.5) * W, H + 0.08, -1.2 * k * k + 0.05], i * 3)
+        lipU[i] = u
+      }
+      lipGeo.setAttribute('position', new THREE.BufferAttribute(lipPos, 3))
+      lipGeo.setAttribute('aU', new THREE.BufferAttribute(lipU, 1))
+      const lip = new THREE.Points(
+        lipGeo,
+        additive(
+          `
+          uniform float uTime, uScale, uBass, uBeat;
+          attribute float aU;
+          varying vec3 vCol;
+          ${common}
+          void main() {
+            vec4 wp = modelMatrix * vec4(position, 1.0);
+            vec4 mv = viewMatrix * wp;
+            gl_PointSize = min(0.22 * uScale / max(-mv.z, 0.1), uScale * 0.06);
+            gl_Position = projectionMatrix * mv;
+            vCol = mix(neon(uA), neon(uC), 0.5 + 0.5 * sin(aU * 12.0 - uTime * 2.0)) * (0.12 + uBass * 0.45 + uBeat * 0.25) * (1.0 - fogAmt(wp.xyz));
+          }
+        `,
+          '3.0',
+        ),
+      )
+      lip.frustumCulled = false
+      group.add(lip)
+
+      // a palette-coloured moonbow hanging in the mist
+      const bow = new THREE.Mesh(
+        new THREE.PlaneGeometry(26, 12),
+        new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          uniforms: { ...shared, uNoise: { value: noiseTex } },
+          vertexShader: `
+            varying vec3 vWorld;
+            void main() {
+              vec4 w = modelMatrix * vec4(position, 1.0);
+              vWorld = w.xyz;
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            uniform float uTime, uMid;
+            uniform sampler2D uNoise;
+            varying vec3 vWorld;
+            ${common}
+            void main() {
+              float r = length(vec2(vWorld.x, vWorld.y + 1.0));
+              float band = (r - 10.5) / 1.1;
+              float inBow = (1.0 - smoothstep(0.75, 1.0, abs(band))) * smoothstep(0.3, 2.5, vWorld.y);
+              vec3 c = band < -0.33 ? mix(neon(uA), neon(uB), (band + 1.0) / 0.67)
+                : (band < 0.33 ? mix(neon(uB), neon(uC), (band + 0.33) / 0.66) : mix(neon(uC), neon(uA), (band - 0.33) / 0.67));
+              float haze = texture2D(uNoise, vWorld.xy * 0.05 + vec2(uTime * 0.01, 0.0)).r;
+              gl_FragColor = vec4(c, inBow * (0.06 + uMid * 0.16) * (0.4 + haze));
+            }
+          `,
+        }),
+      )
+      bow.position.set(0, 6, IMPACT + 3.5)
+      bow.frustumCulled = false
+      group.add(bow)
+
+      scene.add(group)
+    },
+    update(m, _time, dt, palette) {
+      if (!group || !cameraRef || !sky) return
+      clock += dt
+      colorFrom(palette.a, uA)
+      colorFrom(palette.b, uB)
+      colorFrom(palette.c, uC)
+      bassS += (m.bass - bassS) * Math.min(1, dt * 6)
+      shared.uTime.value = clock
+      shared.uEnergy.value = m.energy
+      shared.uBass.value = bassS
+      shared.uMid.value = m.mid
+      shared.uTreble.value = m.treble
+      shared.uBeat.value = m.beat ? 1 : Math.max(0, shared.uBeat.value - dt * 3)
+      shared.uSplash.value = 1 + bassS * 0.7 + shared.uBeat.value * 0.5
+      if (m.beat) {
+        beatTimes[beatIdx] = clock
+        beatAmps[beatIdx] = 0.6 + Math.min(1.2, m.bass) * 0.9
+        beatIdx = (beatIdx + 1) % BEATS
+      }
+      for (let i = 0; i < 32; i++) {
+        const target = ((m.spectrum[i * 2] ?? 0) + (m.spectrum[i * 2 + 1] ?? 0)) * 0.5
+        spec[i] += (target - spec[i]) * Math.min(1, dt * 8)
+      }
+
+      const sway = Math.sin(clock * 0.045) * 9
+      cameraRef.position.set(sway, 4.5 + Math.sin(clock * 0.07) * 2.2, 31 + Math.sin(clock * 0.035) * 3)
+      cameraRef.lookAt(sway * 0.2, 11 + Math.sin(clock * 0.05) * 1.2, 0)
+      sky.position.copy(cameraRef.position)
+    },
+    resize(_w, h) {
+      shared.uScale.value = h * Math.min(window.devicePixelRatio, 2) * 0.5
+    },
+    dispose(scene) {
+      if (group) {
+        scene.remove(group)
+        disposeObject(group)
+      }
+      scene.fog = new THREE.FogExp2(0x030308, 0.028)
+      scene.background = new THREE.Color(0x030308)
+      noiseTex?.dispose()
+      noiseTex = null
+      group = null
+      cameraRef = null
+      sky = null
+    },
+  }
+}
+
 export const STYLE_CATALOG = [
   { id: 'nebula', label: 'Nebula', hint: 'Spiral dust and embers' },
   { id: 'dusk', label: 'Dusk', hint: 'Fixed city orbit' },
@@ -7388,6 +7959,7 @@ export const STYLE_CATALOG = [
   { id: 'caldera', label: 'Caldera', hint: 'Erupting volcano at night' },
   { id: 'rain', label: 'Rain Window', hint: 'Neon city through wet glass' },
   { id: 'butterfly', label: 'Butterfly', hint: 'Moonlit meadow of glowing wings' },
+  { id: 'waterfall', label: 'Waterfall', hint: 'Neon particle cascade' },
 ] as const
 
 export const STYLE_FACTORIES = [
@@ -7405,6 +7977,7 @@ export const STYLE_FACTORIES = [
   createCaldera,
   createRainWindow,
   createButterfly,
+  createWaterfall,
 ]
 
 export function createAllStyles(): VisualStyle[] {
